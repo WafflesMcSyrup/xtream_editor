@@ -1,0 +1,18 @@
+"""The disclaimer shown on first run (and kept in DISCLAIMER.txt and the Help). Bump TERMS_VERSION to ask again."""
+TERMS_VERSION = 1
+TERMS_TITLE = "Disclaimer and terms of use"
+TERMS_TEXT = """Xtream Editor is a personal tool for organizing and playing an IPTV subscription that you already have a legal right to use. It doesn't supply, host, or link to any channels, movies, shows, playlists, or guide data, and it comes with no subscription or login of its own.
+
+By using this software, you agree that:
+
+1. You will use it only with accounts and content you are legally entitled to access, and only in ways that comply with all applicable laws, your provider's terms of service, and the rights of copyright holders.
+2. You will not use it to obtain, share, resell, or distribute pirated or unauthorized content, or to get around any access controls, geographic restrictions, or account limits.
+3. You are solely responsible for how you use it, for the accounts and content you connect to it, and for any consequences of that use.
+
+The software is provided "as is," without warranty of any kind, express or implied, including fitness for a particular purpose and non-infringement. To the fullest extent the law allows, the author is not liable for any claim, damages, data loss, account suspension, or other harm arising from the use of, or inability to use, this software.
+
+This project isn't affiliated with, endorsed by, or connected to any IPTV provider, service, or app, including IPTVnator, UHF, or OneTV. All names and trademarks belong to their owners.
+
+If you don't agree with these terms, don't use the software.
+"""
+SERVER_NOTICE = "By using this software you agree to the terms of use (see DISCLAIMER.txt or Help > Disclaimer)."

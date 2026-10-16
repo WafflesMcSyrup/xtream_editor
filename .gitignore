@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller output (put the built programs on the GitHub Releases page instead)
+build/
+dist/
+*.spec
+
+# Your own data: never commit these
+*.xtp
+*.m3u
+*.m3u8
+epg*.xml
+epg*.xml.gz
+settings.json
+.xtream_editor/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
