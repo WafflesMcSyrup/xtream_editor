@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
-from . import epg
+from . import epg, placeholder
 from .common import APP_DIR
 from .exporter import _extinf
 from .models import KINDS
@@ -89,11 +89,11 @@ def category_ids(names, kind):
     return out
 
 
-def _entry(kind, it, n, cid):
+def _entry(kind, it, n, cid, epg=None):
     cat = {"category_id": cid, "category_ids": [int(cid)]}
     if kind == "live":
         return {"num": n, "name": it.name, "stream_type": "live", "stream_id": _sid(it.id),
-                "stream_icon": it.logo, "epg_channel_id": it.epg_id or None,
+                "stream_icon": it.logo, "epg_channel_id": (epg if epg is not None else it.epg_id) or None,
                 "added": it.added or "0", "is_adult": "0", "custom_sid": "", "tv_archive": 1 if it.arch else 0,
                 "direct_source": "", "tv_archive_duration": it.arch or 0, **cat}
     if kind == "vod":
@@ -108,7 +108,9 @@ def _entry(kind, it, n, cid):
 
 
 class Snapshot:
-    def __init__(self, lib):
+    def __init__(self, lib, placeholders=False):
+        self.placeholders = placeholders
+        self.fill = {}                 # {guide id: channel name} for placeholder guide entries (when on)
         self.conn = dict(lib.connection)
         self.use_provider_epg = lib.use_provider_epg
         self.extra_epg = list(lib.epg_sources)
@@ -127,8 +129,11 @@ class Snapshot:
             rows, meta = [], {}
             for n, it in enumerate(active, 1):
                 cid = str(ids[it.category])
-                rows.append((cid, _entry(kind, it, n, cid)))
-                m = {"name": it.name, "cid": cid, "logo": it.logo, "epg": it.epg_id, "ext": it.ext,
+                gid = placeholder.guide_id(it, placeholders) if kind == "live" else it.epg_id
+                rows.append((cid, _entry(kind, it, n, cid, gid)))
+                if kind == "live" and placeholders:
+                    self.fill.setdefault(gid, it.name)
+                m = {"name": it.name, "cid": cid, "logo": it.logo, "epg": gid, "ext": it.ext,
                      "plot": it.plot}
                 if kind == "series":
                     m["skip"] = {e["id"] for e in (it.episodes or []) if e.get("skip")}
@@ -138,7 +143,7 @@ class Snapshot:
                     self.wanted_epg.add(it.epg_id)
             fcid = str(ids[FAV_NAME]) if favs else None
             for n, it in favs:                       # copies, listed again under "Favorites"
-                copy = _entry(kind, it, n, fcid)
+                copy = _entry(kind, it, n, fcid, placeholder.guide_id(it, placeholders) if kind == "live" else it.epg_id)
                 copy["series_id" if kind == "series" else "stream_id"] = _sid(fav_id(it.id))
                 rows.append((fcid, copy))
             self.rows[kind], self.meta[kind] = rows, meta
@@ -268,8 +273,10 @@ class EpgKeeper(threading.Thread):
 
     def _sig(self, snap):
         urls = [u for _, u in snap.epg_sources()]
+        fill = "\n".join(f"{g}\t{n}" for g, n in sorted(snap.fill.items()))
         return {"ids": zlib.crc32("\n".join(sorted(snap.wanted_epg)).encode()), "sources": urls,
-                "local": [epg.local_stamp(u) for u in urls]}
+                "local": [epg.local_stamp(u) for u in urls], "fill": zlib.crc32(fill.encode()) if fill else 0,
+                "ph": bool(snap.placeholders)}
 
     def _due(self, snap, force):
         if force or not EPG_FILE.exists():
@@ -279,13 +286,16 @@ class EpgKeeper(threading.Thread):
         if age > self.hours * 3600:
             return True
         sig = self._sig(snap)
+        if meta.get("ph", False) != sig["ph"]:              # placeholders switched on or off: rebuild right away
+            return True
         if meta.get("local") != sig["local"]:               # a guide file on this PC was replaced/edited
             return True
-        return age > 900 and (meta.get("ids") != sig["ids"] or meta.get("sources") != sig["sources"])
+        return age > 900 and (meta.get("ids") != sig["ids"] or meta.get("sources") != sig["sources"]
+                              or meta.get("fill", 0) != sig["fill"])
 
     def rebuild(self, snap):
         sources = snap.epg_sources()
-        if not sources:
+        if not sources and not snap.fill:
             self.status = "no guide sources"
             return
         self.status = "reading guides..."
@@ -299,19 +309,20 @@ class EpgKeeper(threading.Thread):
                 self.owner.log(f"guide download failed ({label}): {e}")
             if p.exists():
                 usable.append((label, url))
-        if not usable:
+        if not usable and not snap.fill:
             self.status = "failed: no guide could be downloaded"
             return failed or 1
         self.status = "merging guides..."
         SERVER_DIR.mkdir(parents=True, exist_ok=True)
         tmp = str(EPG_FILE) + ".tmp"
-        stats = epg.merge_xmltv(usable, snap.wanted_epg, tmp, self.owner.ua, gz=True)
+        stats = epg.merge_xmltv(usable, snap.wanted_epg, tmp, self.owner.ua, gz=True, fill=snap.fill)
         os.replace(tmp, EPG_FILE)
         meta = self._sig(snap)
         meta.update(ts=time.time(), **stats)
         EPG_META.write_text(json.dumps(meta))
         self.owner.local_epg = LocalEpg(str(EPG_FILE))
-        self.status = (f"guide ready: {stats['channels']:,} channels, {stats['programmes']:,} programmes "
+        extra = f", plus {stats['placeholders']:,} placeholders" if stats.get("placeholders") else ""
+        self.status = (f"guide ready: {stats['channels']:,} channels{extra}, {stats['programs']:,} programs "
                        f"(updated {time.strftime('%H:%M')})")
         self.owner.log(self.status)
         return failed
@@ -585,6 +596,7 @@ class XtreamServer:
         self.user = self.password = ""
         self.stream_mode = "redirect"
         self.epg_mode = "merged"
+        self.placeholders = False
         self.ua = DEFAULT_UA
         self.lines = collections.deque(maxlen=400)
         self.echo = None                      # optional callable(str), e.g. print for the CLI
@@ -598,14 +610,15 @@ class XtreamServer:
 
     # -- lifecycle -----------------------------------------------------
     def start(self, lib, port, user, password, stream_mode="redirect", epg_mode="merged",
-              epg_hours=12, host="0.0.0.0"):
+              epg_hours=12, host="0.0.0.0", placeholders=False):
         self.stop()
         if not lib.connection.get("server"):
             raise ValueError("No provider login in this project yet. Fetch from the server first.")
         self.user, self.password = user, password
         self.stream_mode, self.epg_mode = stream_mode, epg_mode
         self.ua = lib.connection.get("ua") or DEFAULT_UA
-        self.snap = Snapshot(lib)
+        self.placeholders = bool(placeholders) and epg_mode == "merged"
+        self.snap = Snapshot(lib, self.placeholders)
         self._init_logger()
         self.httpd = _HTTPD((host, int(port)), _Handler)
         self.httpd.owner = self
@@ -625,7 +638,7 @@ class XtreamServer:
         if not self.running:
             return 0.0
         t = time.time()
-        self.snap = Snapshot(lib)
+        self.snap = Snapshot(lib, self.placeholders)
         with self._plock:
             self._pcache.clear()
         return time.time() - t

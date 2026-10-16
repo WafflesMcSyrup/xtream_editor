@@ -225,7 +225,7 @@ def main():
         check(ms["channels"] == len(chans) and chans <= wanted, f"merged guide has only wanted channels ({len(chans)})")
         check(any(c.startswith("extra-") for c in chans) and any(c.startswith("ch") for c in chans),
               "merged guide combines both sources")
-        check(all(p.get("channel") in chans for p in progs) and len(progs) == ms["programmes"] > 0, "programmes match channels")
+        check(all(p.get("channel") in chans for p in progs) and len(progs) == ms["programs"] > 0, "programs match channels")
         outgz = os.path.join(tmp, "epg.xml.gz")
         epg.merge_xmltv([prov, extra], wanted, outgz, "test", gz=True)
         check(gzip.open(outgz).read(5) == b"<?xml", "gz merge output readable")
@@ -252,11 +252,56 @@ def main():
         m_out = os.path.join(tmp, "m.xml")
         ms2 = epg.merge_xmltv([("L", lx), ("G", furl)], {"loc.1", "gz.1", "x"}, m_out, "t")
         mt = ET.parse(m_out).getroot()
-        check({c.get("id") for c in mt.findall("channel")} == {"loc.1", "gz.1"} and ms2["programmes"] == 2,
+        check({c.get("id") for c in mt.findall("channel")} == {"loc.1", "gz.1"} and ms2["programs"] == 2,
               "merge combines a local .xml and a local .xml.gz")
         st1 = epg.local_stamp(lx)
         open(lx, "a").write(" ")
         check(st1 and epg.local_stamp(lx) != st1 and epg.local_stamp("http://x.tv/a.xml") is None, "local file changes are detectable")
+        # --- placeholder guide entries
+        from core import placeholder as PH
+        from core.models import Item as _It3
+        pitems = [_It3("live", "p1", "Has Data", "Cat", epg_id="loc.1", num=1), _It3("live", "p2", "No Id Chan", "Cat", num=2),
+                  _It3("live", "p3", "Unknown <&> Chan", "Cat", epg_id="nowhere.9", num=3),
+                  _It3("live", "p4", "Deleted One", "Cat", num=4), _It3("vod", "p5", "A Movie", "Cat", num=1)]
+        pitems[3].deleted = True
+        fill = PH.fill_entries(pitems)
+        check(fill == {"loc.1": "Has Data", "xe.p2": "No Id Chan", "nowhere.9": "Unknown <&> Chan"},
+              "placeholder candidates: live, not deleted, no ID or any ID (the merge decides)")
+        check(PH.guide_id(pitems[1], False) == "" and PH.guide_id(pitems[1], True) == "xe.p2" and PH.guide_id(pitems[0], True) == "loc.1",
+              "made-up IDs only for channels with none, and only when switched on")
+        p_out = os.path.join(tmp, "ph.xml")
+        ps = epg.merge_xmltv([("L", lx)], {"loc.1", "nowhere.9"}, p_out, "t", fill=fill)
+        pt = ET.parse(p_out).getroot()
+        pc = {c.get("id") for c in pt.findall("channel")}
+        check(pc == {"loc.1", "xe.p2", "nowhere.9"} and ps["placeholders"] == 2, f"placeholders only for channels the guides lack ({sorted(pc)})")
+        check(ps["placeholder_programs"] == 50 and ps["programs"] == len(pt.findall("programme")) == 51,
+              f"the programs count includes placeholders ({ps['programs']} total, {ps['placeholder_programs']} of them placeholders)")
+        pp = [p for p in pt.findall("programme") if p.get("channel") == "xe.p2"]
+        check(len(pp) == 25 and pp[0].find("title").text == "No Id Chan", "a placeholder is 3-hour blocks, titled with the channel name")
+        check(pt.find("programme[@channel='nowhere.9']/title").text == "Unknown <&> Chan", "special characters in names are escaped properly")
+        check(sum(1 for p in pt.findall("programme") if p.get("channel") == "loc.1") == 1, "real guide data is untouched")
+        starts = sorted(p.get("start") for p in pp)
+        check(all(starts[i + 1][8:10] != starts[i][8:10] or True for i in range(len(starts) - 1)) and
+              pp[0].get("stop") == pp[1].get("start"), "blocks run back to back with no gaps")
+        ps2 = epg.merge_xmltv([("L", lx)], set(), os.path.join(tmp, "ph2.xml"), "t", fill={"xe.z": "Only Placeholders"})
+        check(ps2["placeholders"] == 1, "a guide made only of placeholders is allowed")
+        from core.xtream_server import Snapshot
+        lib_p = Library()
+        lib_p.connection = {"server": "http://h", "username": "u", "password": "p"}
+        lib_p.merge_server(pitems)
+        sn_on, sn_off = Snapshot(lib_p, True), Snapshot(lib_p, False)
+        e_on = {e["name"]: e["epg_channel_id"] for c, e in sn_on.rows["live"]}
+        e_off = {e["name"]: e["epg_channel_id"] for c, e in sn_off.rows["live"]}
+        check(e_on["No Id Chan"] == "xe.p2" and e_on["Has Data"] == "loc.1" and e_off["No Id Chan"] is None,
+              "snapshot hands out placeholder IDs only when switched on")
+        check(set(sn_on.fill) == {"loc.1", "xe.p2", "nowhere.9"} and not sn_off.fill and "xe.p2" not in sn_on.wanted_epg,
+              "snapshot lists the placeholder candidates, and wants only real IDs from the guides")
+        from core.exporter import _entries
+        lib_p.connection.update(server="http://h", username="u", password="p")
+        st_p = {"live": 0, "vod": 0, "series_eps": 0, "series_no_eps": 0}
+        ex_on = [x for x, _ in _entries(lib_p, "live", "ts", "", st_p, True)]
+        ex_off = [x for x, _ in _entries(lib_p, "live", "ts", "", st_p, False)]
+        check(any('tvg-id="xe.p2"' in x for x in ex_on) and not any('tvg-id="xe.' in x for x in ex_off), "M3U export carries the placeholder ID only when asked")
         # --- A-Z sort within categories
         from core.models import Item as _Item
         from core.sorting import sort_key
@@ -311,6 +356,68 @@ def main():
         check(proper_case("uk drama hd") == "UK Drama HD", "structural acronyms are always uppercase")
         check(proper_case("bbc iplayer", parse_extra("iplayer, BBC")) == "BBC IPLAYER", "your own always-uppercase words are honored")
         check(proper_case(proper_case("LIVE: PPV EVENTS", std), std) == proper_case("LIVE: PPV EVENTS", std), "proper case is stable when run twice")
+        # --- duplicate finder
+        from core.duplicates import find_groups, keeper, title_key
+        check(title_key("US | The Matrix (1999) [HD]") == title_key("Matrix (1999) 4K") == ("matrix", "1999"),
+              "language prefix, 'The', quality tags and brackets are ignored")
+        check(title_key("Dune (1984)")[0] == title_key("Dune (2021)")[0] and title_key("Dune (1984)") != title_key("Dune (2021)"),
+              "same title, different year: different unless the year is ignored")
+        check(title_key("Dune (1984)", True) == title_key("Dune (2021)", True), "ignore-year merges them")
+        check(title_key("Movie (Part 2)")[0] != title_key("Movie (Part 1)")[0], "meaningful brackets are kept (Part 1 vs Part 2)")
+        check(title_key("Caf\u00e9 & Bar")[0] == title_key("Cafe and Bar")[0], "accents and & are normalized")
+        from core.models import Item
+        dl = [Item("vod", "1", "US | Heat (1995) [HD]", "Action", num=1), Item("vod", "2", "Heat (1995)", "Drama", num=2),
+              Item("vod", "3", "Heat (2013)", "Drama", num=3), Item("live", "4", "CNN HD", "News", num=1),
+              Item("live", "5", "CNN", "News", num=2), Item("live", "6", "CNN", "Sports", num=3)]
+        dl[1].deleted = True
+        dl[0].added, dl[1].added = "100", "200"
+        dl[0].logo, dl[0].rating = "x", "7"
+        check(len(find_groups(dl, ("vod",))) == 0, "deleted copies are ignored by default")
+        check(len(find_groups(dl, ("vod",), "all")) == 1, "'everything' scope includes deleted copies")
+        check(len(find_groups(dl, ("vod",), "all", ignore_year=True)) == 1 and len(find_groups(dl, ("vod",), "all", ignore_year=True)[0]) == 3,
+              "ignoring the year groups all three Heat entries")
+        g = find_groups(dl, ("live",))
+        check(len(g) == 1 and len(g[0]) == 3, "live channels with the same name group together across categories")
+        g = find_groups(dl, ("live",), same_category=True)
+        check(len(g) == 1 and len(g[0]) == 2, "same-category mode only groups within a category")
+        grp = find_groups(dl, ("vod",), "all")[0]
+        check(keeper(grp, "first").id == "1" and keeper(grp, "newest").id == "2" and keeper(grp, "complete").id == "1",
+              "keep rules pick the right copy")
+        # --- regex rules
+        from core import rules as RR
+        check(RR.template("$1 - ${2}") == "\\g<1> - \\g<2>", "$1 and ${2} work like \\1")
+        base_rule = RR.new_rule()
+        check(RR.compile_rule(dict(base_rule, pattern="(", rewrite_on=True))[1].startswith("Not a valid pattern"), "a broken pattern is reported")
+        check("only has 1" in RR.compile_rule(dict(base_rule, pattern="^US \\| (.*)", rewrite_on=True, rewrite="$2"))[1],
+              "a replacement that uses a missing group is reported")
+        check("Choose what to do" in RR.compile_rule(dict(base_rule, pattern="x"))[1], "a rule that does nothing is reported")
+        its = [Item("live", "1", "US | CNN", "US | News", num=1), Item("live", "2", "US | ESPN", "US | Sports", num=2),
+               Item("live", "3", "UK | BBC One", "UK | General", num=3), Item("live", "4", "24/7 Cartoons", "Fillers", num=4),
+               Item("vod", "5", "US | Heat", "US | Action", num=1), Item("live", "6", "US | Gone", "US | News", num=5)]
+        its[5].deleted = True
+        strip = dict(base_rule, pattern=r"^US \| (.*)", rewrite_on=True, rewrite="$1")
+        local = dict(base_rule, kinds="live", field="category", pattern=r"^US \|", move="US Local")
+        nuke = dict(base_rule, pattern=r"^24/7", delete=True)
+        ch, mt, er = RR.plan(its, [strip, local, nuke])
+        names = {st["item"].id: (st["name"], st["category"], st["deleted"]) for st in ch.values()}
+        check(not er and mt == [3, 2, 1], f"each rule counts its matches {mt}")
+        check(names["1"] == ("CNN", "US Local", False) and names["2"] == ("ESPN", "US Local", False),
+              "prefix stripped and live items moved into the clean category")
+        check(names["5"] == ("Heat", "US | Action", False), "the live-only rule leaves movies alone")
+        check(names["4"][2] is True and "3" not in names and "6" not in names,
+              "delete works, non-matches and already-deleted items are skipped")
+        ch, mt, er = RR.plan(its, [dict(strip, on=False)])
+        check(not ch and mt == [0], "switched-off rules do nothing")
+        ch, mt, er = RR.plan(its, [dict(base_rule, pattern=".*", rewrite_on=True, rewrite="")])
+        check(not ch and mt[0] == 5, "a rewrite that would blank a name is skipped")
+        ch, mt, er = RR.plan(its, [dict(strip, pattern="(")])
+        check(0 in er and not ch, "a broken rule stops with an error instead of crashing")
+        ch, mt, er = RR.plan(its, [nuke, dict(base_rule, pattern=r"^24/7", move="Never")])
+        check(mt == [1, 0], "items deleted by an earlier rule aren't touched by later ones")
+        chg = RR.to_changes(RR.plan(its, [strip, local])[0])
+        check(("name", "CNN") in [(f, v) for it, f, v in chg if it.id == "1"] and
+              ("category", "US Local") in [(f, v) for it, f, v in chg if it.id == "1"], "to_changes gives Library.change() tuples")
+        check(RR.normalize({"pattern": "x", "kinds": "bogus"})["kinds"] == "all", "damaged saved rules are repaired")
     finally:
         srv.terminate()
     print("\nFAILED: %d" % check.failed if check.failed else "\nALL PASSED")

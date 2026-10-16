@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import os
 
+from . import placeholder
 from .common import Cancelled, never_cancelled, noop_progress
 from .models import KIND_LABEL, KINDS
 from .xtream import stream_url
@@ -21,7 +22,7 @@ def _extinf(tvg_id, name, logo, group):
             f'tvg-logo="{_attr(logo)}" group-title="{_attr(group)}",{name}')
 
 
-def _entries(lib, kind, live_ext, prefix, stats):
+def _entries(lib, kind, live_ext, prefix, stats, placeholders=False):
     conn = lib.connection
     for it in lib.ordered(kind):
         if it.deleted or it.gone:
@@ -29,7 +30,7 @@ def _entries(lib, kind, live_ext, prefix, stats):
         group = prefix + it.category
         if kind == "live":
             stats["live"] += 1
-            yield _extinf(it.epg_id, it.name, it.logo, group), stream_url(conn, "live", it.id, live_ext)
+            yield _extinf(placeholder.guide_id(it, placeholders), it.name, it.logo, group), stream_url(conn, "live", it.id, live_ext)
         elif kind == "vod":
             stats["vod"] += 1
             yield _extinf("", it.name, it.logo, group), stream_url(conn, "vod", it.id, it.ext)
@@ -47,7 +48,7 @@ def _entries(lib, kind, live_ext, prefix, stats):
                 yield _extinf("", label, it.logo, group), stream_url(conn, "series", e["id"], e.get("ext"))
 
 
-def _write_file(lib, path, kinds, live_ext, epg_header, prefix_groups, stats, cancelled):
+def _write_file(lib, path, kinds, live_ext, epg_header, prefix_groups, stats, cancelled, placeholders=False):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         head = "#EXTM3U"
         if epg_header:
@@ -56,7 +57,7 @@ def _write_file(lib, path, kinds, live_ext, epg_header, prefix_groups, stats, ca
         n = 0
         for kind in kinds:
             prefix = GROUP_PREFIX[kind] if prefix_groups else ""
-            for extinf, url in _entries(lib, kind, live_ext, prefix, stats):
+            for extinf, url in _entries(lib, kind, live_ext, prefix, stats, placeholders):
                 f.write(extinf + "\n" + url + "\n")
                 n += 1
                 if n % 5000 == 0 and cancelled():
@@ -65,7 +66,7 @@ def _write_file(lib, path, kinds, live_ext, epg_header, prefix_groups, stats, ca
 
 def export_playlists(lib, out_dir, base, kinds, split=False, live_ext="ts",
                      epg_header="", prefix_groups=True,
-                     progress=noop_progress, cancelled=never_cancelled):
+                     progress=noop_progress, cancelled=never_cancelled, placeholders=False):
     """Write one combined M3U, or one per type. Returns stats incl. list of files."""
     os.makedirs(out_dir, exist_ok=True)
     stats = {"live": 0, "vod": 0, "series_eps": 0, "series_no_eps": 0, "files": []}
@@ -77,7 +78,7 @@ def export_playlists(lib, out_dir, base, kinds, split=False, live_ext="ts",
     for i, (ks, path) in enumerate(plan):
         progress(int(100 * i / max(1, len(plan))), f"Writing {os.path.basename(path)}...")
         _write_file(lib, path, ks, live_ext, epg_header,
-                    prefix_groups and not split, stats, cancelled)
+                    prefix_groups and not split, stats, cancelled, placeholders)
         stats["files"].append(path)
     progress(100, "Done")
     return stats

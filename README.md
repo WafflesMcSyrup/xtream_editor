@@ -6,10 +6,16 @@ to your IPTV apps as a small local Xtream server. Built for lists with 50k+ entr
 
 ![Xtream Editor main window](docs/screenshot.png)
 
+| Duplicate finder | Regex rules |
+|---|---|
+| ![Duplicate finder](docs/screenshot-duplicates.png) | ![Regex rules](docs/screenshot-rules.png) |
+
+(Sample data, not a real provider.)
+
 **What it does**
 
 - Fetch a whole account and edit it: rename, recategorize, delete, reorder, set logos and EPG IDs, with undo/redo.
-- **Category manager** with merge, rename and Proper Case tidy-up. **Favorites** (★) and a "new since last sync" filter.
+- **Category manager** with merge, rename and Proper Case tidy-up, a **duplicate finder** for movies, series and channels, and saved **regex rules** to strip prefixes, re-categorize or delete in bulk. **Favorites** (★) and a "new since last sync" filter.
 - **EPG tools:** merge your provider's guide with extra online or local guides, scan for missing IDs, auto-fill by name.
 - **Local Xtream server** for IPTVnator, UHF, OneTV and similar apps: serves your edited list, daily re-sync,
   catch-up support, favorites category. Runs from the editor or on its own with no window.
@@ -63,6 +69,31 @@ below under the *"The Xtream Server"* help topic for how.
   your list until you press Apply. A tick box keeps your **standard acronym list** uppercase (it starts with ESPN, ABC, CBS, NBC, FOX, BBC, AMC, MGM, NFL, NBA, MLB, NHL, HBO, PBS and more). **Edit standard list...** changes it once and it's remembered, and the box below adds one-off extras.
   Search, the type filter and a *Hide fully deleted categories* box help with long lists, and clicking a column
   header sorts. Renamed categories stay renamed when the provider re-syncs.
+- **Duplicate finder** (**Edit > Find duplicates**, Ctrl+Shift+U): looks for the same movie, series or channel listed
+  more than once. Pick the type (Movies, Series, Live, or a mix) and the scope (active items, favorites, new since
+  the last sync, or everything including deleted), then press **Find duplicates**. Copies are grouped by title with
+  the language prefix (`US |`), quality tags (HD, 4K...) and brackets ignored, so `US | Heat (1995) [HD]` and
+  `Heat (1995)` land together. Different years count as different titles unless you tick **Ignore the year**.
+  Select copies and choose **Keep**, **Delete**, **Rename...** or **Move to category...** (or right-click), or let it
+  decide for the whole list with *keep the one earliest in my list / newest / with the most info, delete the rest*.
+  Your choices are colored (red = delete, yellow = rename or move, green = keep) and nothing changes until you press
+  **Apply**, which is one undo step. A popup shows what's about to happen first (tick *Don't ask me again* to skip it,
+  and turn it back on with **Ask before applying** at the bottom of the window). Changed your mind? The
+  **Undo last action** button (or Ctrl+Z in that window) goes back one step. **Clear all choices** wipes every mark at once. Live channels repeat on purpose (the same channel in several categories), so
+  for Live try **Same title in the same category** first.
+- **Regex rules** (**Edit > Regex rules**, Ctrl+Shift+R): saved find-and-fix rules for tidying lots of items at once.
+  Each rule says which type to look at (Live, Movies, Series or all), whether to test the item **name** or its
+  **category**, and a pattern (a Python regular expression). Then pick what happens to matches: **rewrite** the
+  matched field (use `\1` or `$1` to keep what's inside the first set of parentheses), **move** them to a category
+  (pick one from the dropdown or type a new name), and/or **delete** them. Rules run top to bottom, so a later rule sees what an earlier one did, and a name
+  is never rewritten to nothing. Tick or untick a rule to switch it on or off; they're saved in your settings, so
+  they're there next time (and for other projects). **Preview** lists every item that would change, with the before and
+  after, and **Apply** only unlocks once you've previewed (any edit to a rule means preview again). Apply is one undo
+  step, with the same confirmation popup and **Undo last action** button as the duplicate finder. A few examples:
+  - Strip a `US | ` prefix from names: look at the name, pattern `^US \| (.*)`, rewrite with `\1`.
+  - Put everything in a `US |` category into one clean category: look at the category, pattern `^US \|`, move to `US Local`.
+  - Remove "(HD)" or "[4K]" tags from names: look at the name, pattern `\s*[\(\[](HD|4K)[\)\]]`, tick rewrite and leave it empty.
+  - Delete 24/7 filler channels: look at the name, pattern `^24/7`, tick **Delete the items that match**.
 - **Search** box: type several words and a row must contain all of them (checks name, category
   and EPG ID).
 - **Show** dropdown: handy filters like *Live: no EPG ID*, *Live: EPG ID not in my guides*,
@@ -103,6 +134,9 @@ below under the *"The Xtream Server"* help topic for how.
   project, so you can look them over the next morning.
 - **Themes**: **View > Theme** switches the look of the whole app: System (your Windows setting), Light, Dark,
   Nord, Dracula, High Contrast, and the lighter Paper, Catppuccin Latte, Sky and Mint. Your pick is remembered.
+- **Remembers your layout**: the main window's size and position (and whether it was maximized), the divider
+  between the category list and the table, and your column widths are saved when you close the program and come back
+  next time. If a saved position is on a monitor that's no longer there, the window moves onto one that is.
 - Deleting just hides a row from the export. You can bring it back any time (*Show > Deleted only*).
 
 ## Series
@@ -135,6 +169,10 @@ tells you how many were skipped. Tip: delete the shows you don't care about *bef
   provider guide and your extra guides into one local `epg.xml` (only channels in your export are
   kept, which keeps it small). If you tick the merge option, fill in the address where you'll host
   the file so the playlist header can reference it.
+  The merge also has a **Fill channels that have no guide data with a placeholder** tick box (off by default),
+  which adds a made-up show named after the channel for any live channel the guides don't cover, and gives
+  channels without an EPG ID a made-up one (`xe.` plus the channel's number) in the playlist so players can line
+  them up.
 
 ## Exporting
 
@@ -210,6 +248,13 @@ Good to know:
   again 30 minutes later, then 2 hours after that, and then waits for the next regular refresh. That's at
   most two extra downloads, and the log says plainly what it's doing. Until a retry works, the last good
   copy of that guide keeps being served.
+- **Placeholder guide entries** (a tick box under *Refresh guide every*, off by default; or `--placeholder-epg` for the
+  no-window server): channels that have no guide data would show a blank row in your app, so this gives them a
+  made-up show named after the channel ("No guide data from your provider"), in 3-hour blocks for the next 3 days.
+  It covers channels with no EPG ID and channels whose ID isn't in any of your guides, and never touches channels
+  that have real guide data. Channels with no EPG ID are handed a made-up ID (`xe.` plus the channel's number) in
+  what the server and its playlist send out, and nothing is stored on your items. It only works with the merged
+  guide, and switching it on or off rebuilds the guide right away.
 - **Windows firewall** will ask once. Allow it on private networks. Give this PC a fixed address (a DHCP
   reservation in your router) so the apps don't lose it.
 - **Don't port-forward it.** It's for your home network only.

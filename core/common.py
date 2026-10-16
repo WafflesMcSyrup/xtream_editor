@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 APP_NAME = "Xtream Editor"
-APP_VERSION = "6.1"
+APP_VERSION = "6.2"
 APP_DIR = Path.home() / ".xtream_editor"
 CACHE_DIR = APP_DIR / "epg_cache"
 

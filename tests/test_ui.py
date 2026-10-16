@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageB
 
 from ui import dialogs, main_window as mw                                # noqa: E402
 from core.models import Library                                          # noqa: E402
+from core import settings as cfg_mod                                     # noqa: E402
 
 _real_epg_values = dialogs.EpgSourcesDialog.values   # later steps swap this out
 
@@ -413,6 +414,7 @@ try:
 
     # ---- export (combined + merged epg)
     out = os.path.join(TMP, "out")
+    _real_export_values, _real_export_exec = dialogs.ExportDialog.values, dialogs.ExportDialog.exec
     dialogs.ExportDialog.exec = lambda self: True
     dialogs.ExportDialog.values = lambda self: {
         "kinds": ["live", "vod", "series"], "split": False, "prefix": True, "live_ext": "ts",
@@ -427,6 +429,7 @@ try:
         - sum(1 for it in got for e in it.episodes if e.get("skip"))
     check(n_ext == expected, f"{n_ext:,} entries exported (expected {expected:,})")
     check(any("Export finished" in t for t, _ in msgs), "export summary shown")
+    dialogs.ExportDialog.values, dialogs.ExportDialog.exec = _real_export_values, _real_export_exec
 
     # ---- LAN server
     from core.webserver import FileServer
@@ -671,6 +674,194 @@ try:
     check(h.toc.currentRow() == 0 and h.search.text() == "" and h.toc.item(1).isHidden() is False,
           "plain reopen starts fresh at the top with no search")
     h.close()
+    # --- duplicate finder
+    from core.models import Item as _It
+    base = max(i.num for i in win.lib.items) + 1
+    dup_a = _It("vod", "dupA", "ZZ Dupe Film (2001)", "Action", num=base)
+    dup_b = _It("vod", "dupB", "EN | ZZ Dupe Film (2001) [HD]", "Drama", num=base + 1)
+    dup_c = _It("vod", "dupC", "ZZ Dupe Film (2001) 4K", "Drama", num=base + 2)
+    win.lib.items += [dup_a, dup_b, dup_c]
+    win.lib.index.update({it.key: it for it in (dup_a, dup_b, dup_c)} if isinstance(win.lib.index, dict) else {})
+    win.duplicate_finder()
+    df = win._dupes
+    check(df.isVisible() and not df.isModal() and not df.apply_btn.isEnabled(), "duplicate finder opens, Apply is off")
+    df.kind.setCurrentIndex(0)                      # Movies
+    df.search()
+    grp = [g for g in df.groups if any(i.id == "dupA" for i in g)]
+    check(len(grp) == 1 and len(grp[0]) == 3, "the three Dupe Film copies show up as one group")
+    first = df.tree.topLevelItem(0)
+    first.setSelected(True)
+    check(len(df.selected()) >= 1, "rows can be selected")
+    df.tree.clearSelection()
+    check(not df.selected(), "Deselect all / clearSelection empties the selection")
+    stack = len(win.lib.undo_stack)
+    df.auto_pick()                                  # keep earliest, delete the rest
+    check("2 to delete" in df.summary.text().replace(",", ""), f"auto-pick marks the rest ({df.summary.text()})")
+    check(df.apply_btn.isEnabled(), "Apply turns on")
+    df.clear_all()
+    check(not df.pending and not df.apply_btn.isEnabled() and all(
+        df.nodes[k][0].text(6) == "" for k in df.nodes), "Clear all choices wipes every mark and turns Apply off")
+    df.auto_pick()
+    df.pending.pop(dup_b.key)
+    df.paint(dup_b)
+    df.set_pending([dup_b], name="ZZ Dupe Film (2001) EN", category="Action")
+    check(df.ask_box.isChecked() and win.cfg.get("dupes_ask", True), "asks before applying by default")
+    shown = {}
+    from PySide6.QtWidgets import QMessageBox as _MB
+    _real = _MB.exec
+    def _fake(self, answer=_MB.Cancel):
+        shown["text"] = self.text() + " " + self.informativeText()
+        return shown.get("answer", _MB.Cancel)
+    _MB.exec = _fake
+    df.apply()
+    check(len(win.lib.undo_stack) == stack and not dup_c.deleted, "Cancel in the popup changes nothing")
+    check("Undo last action" in shown["text"], "popup mentions the Undo last action button")
+    check("2 items will be changed" in shown["text"] and "1 deleted" in shown["text"] and "1 renamed" in shown["text"]
+          and "1 moved" in shown["text"], f"popup lists the totals ({shown['text']!r})")
+    check(df.pending, "marks are still there after Cancel")
+    shown["answer"] = _MB.Ok
+    df.apply()
+    _MB.exec = _real
+    check(len(win.lib.undo_stack) == stack + 1, "applying is one undo step")
+    check(dup_a.deleted is False and dup_c.deleted and dup_b.name.endswith("EN") and dup_b.category == "Action",
+          "keep, delete, rename and move were all applied")
+    check(not df.pending, "results refresh after applying")
+    check(df.undo_btn.isEnabled() and "resolve duplicates" in df.undo_btn.text() and "one step" in df.undo_btn.toolTip(),
+          f"Undo last action button is on and names the step ({df.undo_btn.text()})")
+    df.undo_last()
+    check(not dup_c.deleted and dup_b.category == "Drama", "the Undo last action button puts everything back")
+    check(df.groups and any(i.id == "dupA" for g in df.groups for i in g), "results refresh after the undo")
+    from PySide6.QtGui import QKeySequence, QShortcut
+    sc = [s for s in df.findChildren(QShortcut) if s.key() == QKeySequence(QKeySequence.Undo)]
+    check(bool(sc), "Ctrl+Z is wired up inside the finder window")
+    df.ask_box.setChecked(False)
+    check(win.cfg.get("dupes_ask") is False, "turning the box off is remembered")
+    df.search()
+    df.set_pending([dup_c], deleted=True)
+    _MB.exec = lambda self: (_ for _ in ()).throw(AssertionError("popup should not show"))
+    df.apply()
+    check(dup_c.deleted, "no popup when 'Ask before applying' is off")
+    _MB.exec = _real
+    win.undo()
+    df.ask_box.setChecked(True)
+    df.close()
+    win.lib.items = [i for i in win.lib.items if i.id not in ("dupA", "dupB", "dupC")]
+    # --- regex rules
+    from core.models import Item as _It2
+    nb = max(i.num for i in win.lib.items) + 1
+    r1 = _It2("live", "rxA", "ZZR | Alpha", "ZZR | Sports", num=nb)
+    r2 = _It2("live", "rxB", "ZZR | Beta", "ZZR | Sports", num=nb + 1)
+    r3 = _It2("live", "rxC", "Plain Name", "Other", num=nb + 2)
+    win.lib.items += [r1, r2, r3]
+    win.lib.index.update({it.key: it for it in (r1, r2, r3)})
+    win.cfg.pop("regex_rules", None)
+    win.regex_rules()
+    rd = win._rules
+    check(rd.isVisible() and not rd.isModal() and not rd.apply_btn.isEnabled(), "regex rules window opens, Apply is off")
+    rd.add_rule()
+    rd.f_pattern.setText(r"^ZZR \| (.*)")
+    rd.f_rewrite_on.setChecked(True)
+    rd.f_rewrite.setText("$1")
+    rd.f_move.setEditText("ZZR Local")
+    rd.f_field.setCurrentIndex(0)
+    rd.form_changed()
+    items_in = [rd.f_move.itemText(i) for i in range(rd.f_move.count())]
+    all_cats = sorted({i.category for i in win.lib.items if not i.deleted}, key=str.lower)
+    check(items_in[0] == "" and items_in[1:] == all_cats and "ZZR | Sports" in items_in,
+          "the Move-to box is a dropdown listing every category (blank first)")
+    rd.f_kinds.setCurrentIndex(2)                       # Movies
+    movie_cats = sorted({i.category for i in win.lib.items if i.kind == "vod" and not i.deleted}, key=str.lower)
+    check([rd.f_move.itemText(i) for i in range(1, rd.f_move.count())] == movie_cats and "ZZR | Sports" not in
+          [rd.f_move.itemText(i) for i in range(rd.f_move.count())], "the list follows the rule's type")
+    check(rd.f_move.currentText() == "ZZR Local" and rd.cur()["kinds"] == "vod", "switching type keeps what you typed")
+    rd.f_kinds.setCurrentIndex(0)
+    rd.f_move.setCurrentIndex(rd.f_move.findText("ZZR | Sports"))
+    check(rd.cur()["move"] == "ZZR | Sports", "picking from the list sets the rule")
+    rd.f_move.setEditText("ZZR Local")
+    check(rd.cur()["move"] == "ZZR Local" and rd.f_move.completer().filterMode() == Qt.MatchContains, "typing works, matching any part of a name")
+    check(win.cfg.get("regex_rules") and win.cfg["regex_rules"][0]["pattern"].startswith("^ZZR"), "rules are saved in your settings")
+    check(not rd.apply_btn.isEnabled(), "Apply stays off until you preview")
+    rd.preview()
+    check(rd.apply_btn.isEnabled() and "2 items would change" in rd.summary.text() and rd.table.rowCount() == 2,
+          f"preview lists what would change ({rd.summary.text()})")
+    check(r1.name == "ZZR | Alpha", "preview changes nothing")
+    rd.f_rewrite.setText("$3")
+    rd.form_changed()
+    check(rd.table.rowCount() == 0 and "Press Preview again" in rd.summary.text(), "editing a rule clears the old preview")
+    check(rd.f_err.text() != "" and not rd.apply_btn.isEnabled(), "a bad replacement shows an error and turns Apply off")
+    rd.f_rewrite.setText("$1")
+    rd.form_changed()
+    rd.preview()
+    n_stack = len(win.lib.undo_stack)
+    shown2 = {}
+    _real2 = _MB.exec
+    _MB.exec = lambda self: (shown2.__setitem__("t", self.text() + self.informativeText()) or _MB.Ok)
+    rd.apply()
+    _MB.exec = _real2
+    check("2 items will be changed" in shown2.get("t", "") and "Undo last action" in shown2["t"], "apply asks first")
+    check(r1.name == "Alpha" and r1.category == "ZZR Local" and r3.name == "Plain Name", "rule applied to the matches only")
+    check(len(win.lib.undo_stack) == n_stack + 1 and "name" in r1.edits, "one undo step, and edits survive a re-sync")
+    check("regex rules" in rd.undo_btn.text(), "Undo last action names the step")
+    rd.undo_last()
+    check(r1.name == "ZZR | Alpha" and r1.category == "ZZR | Sports", "the Undo last action button reverts it")
+    rd.ask_box.setChecked(False)
+    check(win.cfg.get("rules_ask") is False, "'Ask before applying' off is remembered")
+    rd.preview()
+    _MB.exec = lambda self: (_ for _ in ()).throw(AssertionError("no popup expected"))
+    rd.apply()
+    _MB.exec = _real2
+    check(r2.name == "Beta", "no popup when asking is off")
+    win.undo()
+    rd.ask_box.setChecked(True)
+    rd.copy_rule()
+    rd.move_rule(-1)
+    rd.remove_rule()
+    check(len(win.cfg["regex_rules"]) == 1, "copy, move and remove keep the saved list in step")
+    rd.close()
+    win.lib.items = [i for i in win.lib.items if not i.id.startswith("rx")]
+    # --- placeholder guide options in the dialogs
+    from ui.dialogs import ExportDialog as _ED, XtreamServerDialog as _XD
+    xd = _XD(win, win.xs, dict(win.cfg, xs_pass="pw"), lambda st: None, lambda: None, lambda: None)
+    check(not xd.fill.isChecked() and xd.settings()["xs_placeholders"] is False, "server window: placeholders are off by default")
+    xd.epg.setCurrentIndex(xd.epg.findData("merged"))
+    xd.fill.setChecked(True)
+    check(xd.settings()["xs_placeholders"] is True, "ticking it turns them on")
+    xd.epg.setCurrentIndex(xd.epg.findData("provider"))
+    check(not xd.fill.isEnabled() and xd.settings()["xs_placeholders"] is False, "only offered with the merged guide")
+    xd.timer.stop()
+    xd.close()
+    ed = _ED(win, {"live": 3, "vod": 1, "series": 0}, win.cfg, "http://x:1", can_merge=True)
+    check(not ed.fill.isEnabled() and ed.values()["placeholders"] is False, "export window: off, and unavailable until merged guide is chosen")
+    ed.e_merge.setChecked(True)
+    check(ed.fill.isEnabled() and not ed.fill.isChecked(), "choosing the merged guide offers it (still off)")
+    ed.fill.setChecked(True)
+    check(ed.values()["placeholders"] is True, "ticked: export gets placeholders")
+    ed.k_live.setChecked(False)
+    check(ed.values()["placeholders"] is False, "no live channels in the export, nothing to fill")
+    ed.close()
+    # --- remembers window size, divider and column widths
+    win.resize(700, 500)
+    from PySide6.QtWidgets import QWidget as _QW
+    _QW.move(win, 60, 70)
+    win.split.setSizes([333, 777])
+    win.table.setColumnWidth(1, 401)
+    win._remember_layout()
+    cfg_mod.save(win.cfg)
+    w2 = mw.MainWindow()
+    check((w2.width(), w2.height()) == (700, 500), f"window size is remembered ({w2.width()}x{w2.height()})")
+    check(abs(w2.x() - 60) <= 5 and abs(w2.y() - 70) <= 5, f"window position is remembered ({w2.x()},{w2.y()})")
+    check(w2.table.columnWidth(1) == 401, "column widths are remembered")
+    check(abs(w2.split.sizes()[0] - 333) <= 2 or w2.split.sizes()[0] > 0, "divider position is restored")
+    w2._remember_layout()
+    check(w2.cfg["win_splitter"] == w2.split.sizes(), "layout is saved from the live window")
+    bad = dict(win.cfg, win_geometry=12345, win_splitter="x", win_columns=[1, 2])
+    cfg_mod.save(bad)
+    w3 = mw.MainWindow()
+    check(w3.width() > 0 and w3.table.columnWidth(1) > 0, "damaged saved layout falls back to defaults instead of crashing")
+    for w in (w2, w3):
+        w.lib.dirty = False
+        w.xs.stop()
+    cfg_mod.save(win.cfg)
     win.lib.dirty = False
     win.close()
 finally:

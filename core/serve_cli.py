@@ -92,7 +92,8 @@ def run(args):
     srv = XtreamServer()
     srv.echo = print
     try:
-        srv.start(lib, port, user, password, mode, epg_mode, int(s.get("xs_epg_hours", 12)))
+        srv.start(lib, port, user, password, mode, epg_mode, int(s.get("xs_epg_hours", 12)),
+                  placeholders=bool(args.placeholder_epg or s.get("xs_placeholders", False)))
     except OSError as e:
         print(f"Couldn't start on port {port}: {e}\nTry another port with --port.")
         return 1
@@ -107,7 +108,7 @@ def run(args):
         next_at = time.time() + args.first_refresh_in if args.first_refresh_in else next_run(time.time(), refresh_at)
         print(f"  Re-syncing with your provider every day at {refresh_at} (this PC's clock); next: "
               f"{time.strftime('%a %H:%M', time.localtime(next_at))}.")
-    print("  Leave this window open. Ctrl+C to stop.\n")
+    print("  Leave this window open (minimizing is also fine). Ctrl+C to stop.\n")
 
     def stamp():
         try:

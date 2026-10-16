@@ -147,7 +147,7 @@ def scan_channels(path):
                     if cid:
                         chans[cid] = [(d.text or "").strip()
                                       for d in el.findall("display-name") if d.text]
-                elif chans:                 # first programme and we already have channels
+                elif chans:                 # first program and we already have channels
                     break
     except (ET.ParseError, OSError, EOFError) as e:
         if not chans:
@@ -217,11 +217,12 @@ def refresh_sources(sources, ua, progress=noop_progress, cancelled=never_cancell
 
 # ---- merge -------------------------------------------------------------------
 def merge_xmltv(sources, wanted_ids, out_path, ua, gz=False,
-                progress=noop_progress, cancelled=never_cancelled):
+                progress=noop_progress, cancelled=never_cancelled, fill=None):
     """Merge cached guides into one file holding only `wanted_ids`.
     Earlier sources win when two have the same channel id.
-    sources: [(label, url)] in priority order. Downloads any that aren't cached yet."""
-    if not wanted_ids:
+    sources: [(label, url)] in priority order. Downloads any that aren't cached yet.
+    fill: optional {guide id: channel name}; any of those the guides don't have get placeholder programs."""
+    if not wanted_ids and not fill:
         raise EpgError("No EPG IDs on the channels being exported, nothing to merge.")
     paths = []
     for i, (label, url) in enumerate(sources):
@@ -235,7 +236,7 @@ def merge_xmltv(sources, wanted_ids, out_path, ua, gz=False,
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     opener = gzip.open if gz else open
-    chosen, stats = {}, {"channels": 0, "programmes": 0}
+    chosen, stats = {}, {"channels": 0, "programs": 0, "placeholder_programs": 0}
     with opener(out_path, "wt", encoding="utf-8") as out:
         out.write('<?xml version="1.0" encoding="UTF-8"?>\n'
                   '<tv generator-info-name="Xtream Editor">\n')
@@ -255,10 +256,15 @@ def merge_xmltv(sources, wanted_ids, out_path, ua, gz=False,
                             out.write(_to_str(el) + "\n")
                     elif seen_channel:
                         break
+        need = {g: n for g, n in (fill or {}).items() if g not in chosen}
+        if need:
+            from . import placeholder
+            placeholder.write_channels(out, need)
         stats["channels"] = len(chosen)
-        # pass 2: programmes
+        stats["placeholders"] = len(need)
+        # pass 2: programs
         for i, p in enumerate(paths):
-            progress(50 + int(48 * i / len(paths)), f"Merging programmes from {sources[i][0]}...")
+            progress(50 + int(48 * i / len(paths)), f"Merging programs from {sources[i][0]}...")
             n = 0
             with open_maybe_gz(p) as f:
                 for el in iter_top(f):
@@ -266,10 +272,14 @@ def merge_xmltv(sources, wanted_ids, out_path, ua, gz=False,
                         continue
                     if chosen.get(el.get("channel")) == i:
                         out.write(_to_str(el) + "\n")
-                        stats["programmes"] += 1
+                        stats["programs"] += 1
                     n += 1
                     if n % 20000 == 0 and cancelled():
                         raise Cancelled()
+        if need:
+            made = placeholder.write_programs(out, need)
+            stats["placeholder_programs"] = made
+            stats["programs"] += made
         out.write("</tv>\n")
     progress(100, "Done")
     return stats

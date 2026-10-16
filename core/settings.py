@@ -13,7 +13,7 @@ DEFAULTS = {
     "serve_port": 8765,
     # local Xtream server
     "xs_port": 8090, "xs_user": "local", "xs_pass": "", "xs_mode": "redirect",
-    "xs_epg": "merged", "xs_epg_hours": 12,
+    "xs_epg": "merged", "xs_epg_hours": 12, "xs_placeholders": False,
     "xs_refresh_at": "03:00",
 }
 

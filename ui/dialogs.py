@@ -8,9 +8,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QSpinBox,
-                               QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
+                               QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QSpinBox,
+                               QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from core import matcher
 from core.common import APP_DIR, APP_NAME, APP_VERSION
@@ -225,11 +226,18 @@ class ExportDialog(QDialog):
         self.e_provider.setChecked(True)
         self.e_merge.setEnabled(can_merge)
         self.gz = QCheckBox("Compress the merged guide (.xml.gz)")
+        self.fill = QCheckBox("Fill channels that have no guide data with a placeholder (the channel's name)")
+        self.fill.setToolTip("Channels with no EPG ID, or whose ID isn't in any of your guides, get a made-up show "
+                             "named after the channel (3-hour blocks, next 3 days), and the playlist gives them a "
+                             "guide ID so players can line them up. Needs the merged guide.")
+        self.fill.setEnabled(False)
+        self.e_merge.toggled.connect(lambda on: self.fill.setEnabled(bool(on) and can_merge))
         self.base_url = QLineEdit(lan_base)
         self.base_url.setPlaceholderText("http://192.168.1.50:8765  (where the files will be served from)")
         l3.addWidget(self.e_provider)
         l3.addWidget(self.e_merge)
         l3.addWidget(self.gz)
+        l3.addWidget(self.fill)
         hint = QLabel("Address the merged guide will be hosted at (goes in the playlist header; "
                       "leave blank to add the guide URL in your IPTV app by hand):")
         hint.setWordWrap(True)
@@ -265,7 +273,8 @@ class ExportDialog(QDialog):
         return {"kinds": kinds, "split": self.split.isChecked(), "prefix": self.prefix.isChecked(),
                 "live_ext": self.live_ext.currentText(), "folder": self.folder.text().strip(),
                 "base": self.base.text().strip() or "playlist", "epg_mode": mode,
-                "gz": self.gz.isChecked(), "base_url": self.base_url.text().strip().rstrip("/")}
+                "gz": self.gz.isChecked(), "base_url": self.base_url.text().strip().rstrip("/"),
+                "placeholders": self.fill.isChecked() and mode == "merge" and "live" in kinds}
 
 
 class ServeDialog(QDialog):
@@ -418,12 +427,21 @@ class XtreamServerDialog(QDialog):
         self.hours.setRange(1, 72)
         self.hours.setSuffix(" hours")
         self.hours.setValue(int(cfg.get("xs_epg_hours", 12)))
+        self.fill = QCheckBox("Fill channels that have no guide data with a placeholder (the channel's name)")
+        self.fill.setToolTip("Channels with no EPG ID, or whose ID isn't in any of your guides, get a made-up "
+                             "show named after the channel (in 3-hour blocks for the next 3 days) so your app's "
+                             "guide isn't blank. Only works with the merged guide. Takes effect the next time "
+                             "the server starts.")
+        self.fill.setChecked(bool(cfg.get("xs_placeholders", False)))
+        self.epg.currentIndexChanged.connect(lambda *_: self.fill.setEnabled(self.epg.currentData() == "merged"))
+        self.fill.setEnabled(self.epg.currentData() == "merged")
         form.addRow("Port:", self.port)
         form.addRow("Username for the apps:", self.user)
         form.addRow("Password for the apps:", self.pw)
         form.addRow("Playback:", self.mode)
         form.addRow("Guide:", self.epg)
         form.addRow("Refresh guide every:", self.hours)
+        form.addRow("", self.fill)
         lay.addLayout(form)
 
         self.btn = QPushButton()
@@ -457,7 +475,8 @@ class XtreamServerDialog(QDialog):
     def settings(self):
         return {"xs_port": self.port.value(), "xs_user": self.user.text().strip() or "local",
                 "xs_pass": self.pw.text().strip(), "xs_mode": self.mode.currentData(),
-                "xs_epg": self.epg.currentData(), "xs_epg_hours": self.hours.value()}
+                "xs_epg": self.epg.currentData(), "xs_epg_hours": self.hours.value(),
+                "xs_placeholders": self.fill.isChecked() and self.epg.currentData() == "merged"}
 
     def _toggle(self):
         if self.xs.running:
@@ -1386,3 +1405,720 @@ class SortDialog(QDialog):
 
     def mode(self):
         return "all" if self.all_list_rb.isChecked() else "category"
+
+
+def confirm_changes(parent, ch):
+    """The 'Apply these changes?' popup. ch is a Library.change() list. -> (accepted, don't-ask-again ticked)."""
+    deleted = sum(1 for _, f, _v in ch if f == "deleted")
+    renamed = sum(1 for _, f, _v in ch if f == "name")
+    moved = sum(1 for _, f, _v in ch if f == "category")
+    total = len({it.key for it, _f, _v in ch})
+    lines = []
+    if deleted:
+        lines.append(f"{deleted:,} deleted")
+    if renamed:
+        lines.append(f"{renamed:,} renamed")
+    if moved:
+        lines.append(f"{moved:,} moved to another category")
+    box = QMessageBox(parent)
+    box.setWindowTitle("Apply these changes?")
+    box.setIcon(QMessageBox.Question)
+    box.setText(f"{total:,} item{'s' if total != 1 else ''} will be changed:")
+    box.setInformativeText("\n".join("  \u2022 " + t for t in lines)
+                           + "\n\nYou can undo this afterward with the Undo last action button (or Ctrl+Z).")
+    again = QCheckBox("Don't ask me again")
+    box.setCheckBox(again)
+    box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+    box.button(QMessageBox.Ok).setText("Apply")
+    return box.exec() == QMessageBox.Ok, again.isChecked()
+
+
+# ---- duplicate finder ------------------------------------------------------
+class _ClearOnBlankTree(QTreeWidget):
+    """A tree where clicking empty space deselects everything."""
+
+    def mousePressEvent(self, ev):
+        if not self.indexAt(ev.position().toPoint()).isValid():
+            self.clearSelection()
+        super().mousePressEvent(ev)
+
+
+class DuplicateFinderDialog(QDialog):
+    """Groups entries that look like the same title. Mark what to do with each copy, then Apply."""
+    TYPES = (("Movies", ("vod",)), ("Series", ("series",)), ("Movies + Series", ("vod", "series")),
+             ("Live", ("live",)), ("All types", ("live", "vod", "series")))
+    SCOPES = (("Active items", "active"), ("Favorites only", "fav"), ("New since last sync", "new"),
+              ("Everything (incl. deleted)", "all"))
+    KEEP_RULES = (("the one earliest in my list", "first"), ("the newest one the provider added", "newest"),
+                  ("the one with the most info (logo, rating, plot)", "complete"))
+    MAX_GROUPS = 5000
+    RED = QColor(220, 60, 60, 70)
+    YELLOW = QColor(255, 215, 0, 70)
+    GREEN = QColor(60, 180, 90, 60)
+
+    def __init__(self, parent, lib, on_apply, ask=True, on_ask=None, on_undo=None):
+        super().__init__(parent)
+        self.setWindowTitle("Duplicate finder")
+        self.resize(1050, 680)
+        self.lib, self.on_apply, self.on_ask, self.on_undo = lib, on_apply, on_ask, on_undo
+        self.groups = []
+        self.searched = False
+        self.total_groups = 0
+        self.pending = {}            # item.key -> {'deleted': True} / {'name': ..} / {'category': ..} / {'keep': True}
+        self.nodes = {}              # item.key -> (tree item, Item)
+        lay = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        self.kind = QComboBox()
+        for label, _ in self.TYPES:
+            self.kind.addItem(label)
+        self.scope = QComboBox()
+        for label, _ in self.SCOPES:
+            self.scope.addItem(label)
+        self.within = QComboBox()
+        self.within.addItems(["Same title anywhere", "Same title in the same category"])
+        self.no_year = QCheckBox("Ignore the year")
+        self.no_year.setToolTip("Off: 'Dune (1984)' and 'Dune (2021)' are different titles.")
+        self.find_btn = QPushButton("Find duplicates")
+        self.find_btn.setDefault(True)
+        self.find_btn.clicked.connect(self.search)
+        for w in (QLabel("Look in:"), self.kind, self.scope, self.within, self.no_year):
+            top.addWidget(w)
+        top.addStretch(1)
+        top.addWidget(self.find_btn)
+        lay.addLayout(top)
+
+        self.tree = _ClearOnBlankTree()
+        self.tree.setColumnCount(7)
+        self.tree.setHeaderLabels(["Title", "Type", "Category", "ID", "Added", "Rating", "Your choice"])
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.menu)
+        hh = self.tree.header()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        for col, w in enumerate((430, 70, 220, 90, 90, 60)):
+            self.tree.setColumnWidth(col, w)
+        lay.addWidget(self.tree, 1)
+
+        act = QHBoxLayout()
+        act.addWidget(QLabel("For the selected copies:"))
+        for text, fn in (("Keep", self.do_keep), ("Delete", self.do_delete), ("Rename...", self.do_rename),
+                         ("Move to category...", self.do_move), ("Clear choice", self.do_clear)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            act.addWidget(b)
+        clear_all = QPushButton("Clear all choices")
+        clear_all.setToolTip("Removes every Keep / Delete / Rename / Move mark in this window, no selection needed. "
+                             "Nothing in your list changes until you press Apply.")
+        clear_all.clicked.connect(self.clear_all)
+        act.addWidget(clear_all)
+        self.undo_btn = QPushButton("Undo last action")
+        self.undo_btn.clicked.connect(self.undo_last)
+        act.addWidget(self.undo_btn)
+        QShortcut(QKeySequence.Undo, self, activated=self.undo_last)
+        act.addStretch(1)
+        lay.addLayout(act)
+
+        auto = QHBoxLayout()
+        auto.addWidget(QLabel("Or in every group, keep"))
+        self.rule = QComboBox()
+        for label, _ in self.KEEP_RULES:
+            self.rule.addItem(label)
+        auto.addWidget(self.rule)
+        auto.addWidget(QLabel("and delete the rest"))
+        b = QPushButton("Mark them all")
+        b.clicked.connect(self.auto_pick)
+        auto.addWidget(b)
+        auto.addStretch(1)
+        lay.addLayout(auto)
+
+        tip = QLabel("Nothing changes in your list until you press Apply, and Apply is one undo step. "
+                     "Live channels repeat a lot on purpose, so they're best checked with 'same category' on.")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        self.ask_box = QCheckBox("Ask before applying")
+        self.ask_box.setChecked(bool(ask))
+        self.ask_box.toggled.connect(lambda on: self.on_ask(on) if self.on_ask else None)
+        lay.addWidget(self.ask_box)
+        bottom = QHBoxLayout()
+        self.summary = QLabel("Pick what to look for and press Find duplicates.")
+        bottom.addWidget(self.summary, 1)
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.clicked.connect(self.apply)
+        self.apply_btn.setAutoDefault(False)
+        close = QPushButton("Close")
+        close.setAutoDefault(False)
+        close.clicked.connect(self.close)
+        bottom.addWidget(self.apply_btn)
+        bottom.addWidget(close)
+        lay.addLayout(bottom)
+        self.update_summary()
+
+    # ---- search -------------------------------------------------------
+    def search(self):
+        kinds = self.TYPES[self.kind.currentIndex()][1]
+        scope = self.SCOPES[self.scope.currentIndex()][1]
+        from core.duplicates import find_groups
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            groups = find_groups(self.lib.items, kinds, scope, self.within.currentIndex() == 1,
+                                 self.no_year.isChecked())
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.total_groups = len(groups)
+        self.searched = True
+        self.groups = groups[:self.MAX_GROUPS]
+        self.pending.clear()
+        self.fill()
+
+    def undo_last(self):
+        """Same as Edit > Undo in the main window (Ctrl+Z doesn't reach it from this separate window)."""
+        if not self.lib.undo_stack or not self.on_undo:
+            return
+        self.on_undo()
+        self.search()                 # the groups may have changed; marks are cleared
+
+    def update_undo(self):
+        stack = self.lib.undo_stack
+        self.undo_btn.setEnabled(bool(stack))
+        self.undo_btn.setText(f"Undo last action ({stack[-1][0]})" if stack else "Undo last action")
+        self.undo_btn.setToolTip("Goes back one step. Undoes the last change made to your list (for example your last "
+                                 "Apply here). Click again to go back another step.")
+
+    def reload(self):
+        """Called when the window is shown again: forget stale results."""
+        self.groups, self.pending, self.nodes = [], {}, {}
+        self.searched = False
+        self.tree.clear()
+        self.summary.setText("Pick what to look for and press Find duplicates.")
+        self.update_summary()
+
+    def fill(self):
+        self.tree.setUpdatesEnabled(False)
+        self.tree.clear()
+        self.nodes = {}
+        for g in self.groups:
+            head = QTreeWidgetItem(self.tree, [f"{g[0].name}   ({len(g)} copies)"])
+            f = head.font(0)
+            f.setBold(True)
+            head.setFont(0, f)
+            for it in g:
+                child = QTreeWidgetItem(head, [it.name, KIND_LABEL[it.kind], it.category, it.id, self.added_text(it),
+                                               str(it.rating or ""), ""])
+                child.setData(0, Qt.UserRole, it.key)
+                self.nodes[it.key] = (child, it)
+                self.paint(it)
+            head.setExpanded(True)
+        self.tree.setUpdatesEnabled(True)
+        self.update_summary()
+
+    @staticmethod
+    def added_text(it):
+        try:
+            import time
+            return time.strftime("%Y-%m-%d", time.localtime(float(it.added)))
+        except (TypeError, ValueError, OverflowError, OSError):
+            return str(it.added or "")
+
+    # ---- choices ------------------------------------------------------
+    def selected(self):
+        out, seen = [], set()
+        for node in self.tree.selectedItems():
+            kids = [node.child(i) for i in range(node.childCount())] if node.childCount() else [node]
+            for k in kids:
+                key = k.data(0, Qt.UserRole)
+                if key in self.nodes and key not in seen:
+                    seen.add(key)
+                    out.append(self.nodes[key][1])
+        return out
+
+    def paint(self, it):
+        node = self.nodes[it.key][0]
+        p = self.pending.get(it.key, {})
+        parts = []
+        if p.get("deleted"):
+            parts.append("Delete")
+        if "name" in p:
+            parts.append(f"Rename to {p['name']}")
+        if "category" in p:
+            parts.append(f"Move to {p['category']}")
+        if p.get("keep") and not parts:
+            parts.append("Keep")
+        node.setText(6, ", ".join(parts))
+        color = self.RED if p.get("deleted") else self.YELLOW if ("name" in p or "category" in p) \
+            else self.GREEN if p.get("keep") else None
+        for c in range(7):
+            node.setBackground(c, QBrush(color) if color else QBrush())
+
+    def set_pending(self, items, **fields):
+        for it in items:
+            if fields.get("keep"):
+                self.pending[it.key] = {"keep": True}
+            else:
+                self.pending.setdefault(it.key, {}).update(fields)
+                self.pending[it.key].pop("keep", None)
+            self.paint(it)
+        self.update_summary()
+
+    def need_selection(self):
+        sel = self.selected()
+        if not sel:
+            self.summary.setText("Select one or more copies first (or a whole group).")
+        return sel
+
+    def do_keep(self):
+        sel = self.need_selection()
+        if sel:
+            self.set_pending(sel, keep=True)
+
+    def do_delete(self):
+        sel = self.need_selection()
+        if sel:
+            self.set_pending(sel, deleted=True)
+
+    def do_clear(self):
+        for it in self.need_selection():
+            self.pending.pop(it.key, None)
+            self.paint(it)
+        self.update_summary()
+
+    def clear_all(self):
+        self.pending.clear()
+        for key in self.nodes:
+            self.paint(self.nodes[key][1])
+        self.update_summary()
+
+    def do_rename(self):
+        sel = self.need_selection()
+        if not sel:
+            return
+        text, ok = QInputDialog.getText(self, "Rename", f"New name for {len(sel)} item{'s' if len(sel) != 1 else ''}:",
+                                        text=sel[0].name)
+        if ok and text.strip():
+            self.set_pending(sel, name=text.strip())
+
+    def do_move(self):
+        sel = self.need_selection()
+        if not sel:
+            return
+        kinds = {it.kind for it in sel}
+        cats = sorted({c for k in kinds for c in self.lib.categories(k)}, key=str.lower)
+        cat, ok = QInputDialog.getItem(self, "Move to category", "Pick one, or type a new name:", cats,
+                                       cats.index(sel[0].category) if sel[0].category in cats else 0, True)
+        if ok and cat.strip():
+            self.set_pending(sel, category=cat.strip())
+
+    def auto_pick(self):
+        from core.duplicates import keeper
+        rule = self.KEEP_RULES[self.rule.currentIndex()][1]
+        for g in self.groups:
+            best = keeper(g, rule)
+            for it in g:
+                if it is best:
+                    self.pending[it.key] = {"keep": True}
+                else:
+                    self.pending[it.key] = {"deleted": True}
+                self.paint(it)
+        self.update_summary()
+
+    def menu(self, pos):
+        m = QMenu(self)
+        for text, fn in (("Keep", self.do_keep), ("Delete", self.do_delete), ("Rename...", self.do_rename),
+                         ("Move to category...", self.do_move), ("Clear choice", self.do_clear)):
+            m.addAction(text, fn)
+        m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    # ---- apply --------------------------------------------------------
+    def changes(self):
+        out = []
+        for key, p in self.pending.items():
+            node = self.nodes.get(key)
+            if not node:
+                continue
+            it = node[1]
+            if p.get("deleted") and not it.deleted:
+                out.append((it, "deleted", True))
+            if "name" in p:
+                out.append((it, "name", p["name"]))
+            if "category" in p:
+                out.append((it, "category", p["category"]))
+        return out
+
+    def update_summary(self):
+        n_del = sum(1 for p in self.pending.values() if p.get("deleted"))
+        n_edit = sum(1 for p in self.pending.values() if "name" in p or "category" in p)
+        shown = len(self.groups)
+        total = getattr(self, "total_groups", shown)
+        head = ""
+        if shown:
+            head = f"{shown:,} group{'s' if shown != 1 else ''} of duplicates"
+            if total > shown:
+                head += f" (showing the first {shown:,} of {total:,})"
+            head += "   |   "
+        elif self.searched:
+            head = "No duplicates found.   |   "
+        self.summary.setText(f"{head}{n_del:,} to delete, {n_edit:,} to rename or move")
+        self.apply_btn.setEnabled(bool(n_del or n_edit))
+        self.update_undo()
+
+    def confirm(self, ch):
+        """Popup listing what is about to happen. 'Don't ask again' just unticks the box in the window."""
+        ok, again = confirm_changes(self, ch)
+        if ok and again:
+            self.ask_box.setChecked(False)           # saves through on_ask; the box in this window turns it back on
+        return ok
+
+    def apply(self):
+        ch = self.changes()
+        if not ch:
+            return
+        if self.ask_box.isChecked() and not self.confirm(ch):
+            return
+        self.on_apply(ch)
+        self.search()                 # what's left after the changes
+
+
+# ---- regex rules -----------------------------------------------------------
+class RegexRulesDialog(QDialog):
+    """Rules list on the left, the selected rule on the right, a preview of what would change underneath."""
+    MAX_ROWS = 2000
+    RED = QColor(220, 60, 60, 70)
+    YELLOW = QColor(255, 215, 0, 70)
+
+    def __init__(self, parent, lib, rules, on_save, on_apply, ask=True, on_ask=None, on_undo=None):
+        super().__init__(parent)
+        from core import rules as R
+        self.R = R
+        self.setWindowTitle("Regex rules")
+        self.resize(1100, 760)
+        self.lib, self.on_save, self.on_apply, self.on_ask, self.on_undo = lib, on_save, on_apply, on_ask, on_undo
+        self.rules = [R.normalize(r) for r in rules]
+        self.changed = {}
+        self._loading = False
+        lay = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Rules (run top to bottom; tick to switch one on):"))
+        self.listw = QListWidget()
+        self.listw.setMinimumWidth(260)
+        self.listw.currentRowChanged.connect(self.load_rule)
+        self.listw.itemChanged.connect(self.item_toggled)
+        left.addWidget(self.listw, 1)
+        row = QHBoxLayout()
+        for text, fn in (("Add", self.add_rule), ("Copy", self.copy_rule), ("Remove", self.remove_rule),
+                         ("Up", lambda: self.move_rule(-1)), ("Down", lambda: self.move_rule(1))):
+            b = QPushButton(text)
+            b.setAutoDefault(False)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        left.addLayout(row)
+        top.addLayout(left, 1)
+
+        self.form_box = QGroupBox("This rule")
+        form = QFormLayout(self.form_box)
+        self.f_name = QLineEdit()
+        self.f_name.setPlaceholderText("Optional label, e.g. Strip US prefix")
+        self.f_kinds = QComboBox()
+        for label, _ in R.KIND_CHOICES:
+            self.f_kinds.addItem(label)
+        self.f_field = QComboBox()
+        for label, _ in R.FIELD_CHOICES:
+            self.f_field.addItem(label)
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.f_kinds)
+        mrow.addWidget(QLabel("whose"))
+        mrow.addWidget(self.f_field)
+        mrow.addWidget(QLabel("matches:"))
+        mrow.addStretch(1)
+        self.f_pattern = QLineEdit()
+        self.f_pattern.setPlaceholderText(r"e.g.  ^US \| (.*)")
+        self.f_case = QCheckBox("Ignore upper/lower case")
+        self.f_err = QLabel("")
+        self.f_err.setStyleSheet("color: #d04040;")
+        self.f_err.setWordWrap(True)
+        self.f_rewrite_on = QCheckBox("Rewrite the matched field with:")
+        self.f_rewrite = QLineEdit()
+        self.f_rewrite.setPlaceholderText(r"e.g.  \1  (or $1) keeps what's in the first ( ); leave empty to just remove the match")
+        self.f_move = QComboBox()
+        self.f_move.setEditable(True)
+        self.f_move.setInsertPolicy(QComboBox.NoInsert)
+        self.f_move.setMaxVisibleItems(20)
+        self.f_move.lineEdit().setPlaceholderText("pick one, or type a new name (blank keeps the current category)")
+        comp = self.f_move.completer()
+        comp.setFilterMode(Qt.MatchContains)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        self.f_delete = QCheckBox("Delete the items that match")
+        form.addRow("Name:", self.f_name)
+        form.addRow("Look at:", mrow)
+        form.addRow("Pattern:", self.f_pattern)
+        form.addRow("", self.f_case)
+        form.addRow("", self.f_err)
+        form.addRow(self.f_rewrite_on, self.f_rewrite)
+        form.addRow("Move matches to category:", self.f_move)
+        form.addRow("", self.f_delete)
+        hint = QLabel("Patterns are Python regular expressions. Rules run in order, so a later rule sees the result of "
+                      "an earlier one. A name is never rewritten to nothing.")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        top.addWidget(self.form_box, 2)
+        lay.addLayout(top)
+
+        for w in (self.f_name, self.f_pattern, self.f_rewrite):
+            w.textEdited.connect(self.form_changed)
+        self.f_move.editTextChanged.connect(self.form_changed)        # typing or picking from the list
+        self.f_kinds.currentIndexChanged.connect(self.update_cats)    # the list follows the rule's type
+        for w in (self.f_kinds, self.f_field):
+            w.currentIndexChanged.connect(self.form_changed)
+        for w in (self.f_case, self.f_rewrite_on, self.f_delete):
+            w.toggled.connect(self.form_changed)
+
+        pv = QHBoxLayout()
+        self.preview_btn = QPushButton("Preview")
+        self.preview_btn.setAutoDefault(False)
+        self.preview_btn.clicked.connect(self.preview)
+        pv.addWidget(self.preview_btn)
+        self.counts = QLabel("")
+        self.counts.setWordWrap(True)
+        pv.addWidget(self.counts, 1)
+        lay.addLayout(pv)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Type", "Name now", "Name after", "Category now", "Category after", "Action"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        for col, w in enumerate((70, 300, 300, 160, 160)):
+            self.table.setColumnWidth(col, w)
+        lay.addWidget(self.table, 2)
+
+        self.ask_box = QCheckBox("Ask before applying")
+        self.ask_box.setChecked(bool(ask))
+        self.ask_box.toggled.connect(lambda on: self.on_ask(on) if self.on_ask else None)
+        lay.addWidget(self.ask_box)
+        bottom = QHBoxLayout()
+        self.summary = QLabel("Preview shows exactly what would change. Nothing changes until you press Apply.")
+        bottom.addWidget(self.summary, 1)
+        self.undo_btn = QPushButton("Undo last action")
+        self.undo_btn.setAutoDefault(False)
+        self.undo_btn.clicked.connect(self.undo_last)
+        QShortcut(QKeySequence.Undo, self, activated=self.undo_last)
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.setAutoDefault(False)
+        self.apply_btn.clicked.connect(self.apply)
+        close = QPushButton("Close")
+        close.setAutoDefault(False)
+        close.clicked.connect(self.close)
+        for b in (self.undo_btn, self.apply_btn, close):
+            bottom.addWidget(b)
+        lay.addLayout(bottom)
+
+        self.refill()
+        self.update_cats()
+        self.update_undo()
+        self.apply_btn.setEnabled(False)
+
+    # ---- the rule list --------------------------------------------------
+    def label(self, r):
+        return r["name"].strip() or r["pattern"] or "(new rule)"
+
+    def refill(self, select=0):
+        self.listw.blockSignals(True)
+        self.listw.clear()
+        for r in self.rules:
+            it = QListWidgetItem(self.label(r))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if r["on"] else Qt.Unchecked)
+            self.listw.addItem(it)
+        self.listw.blockSignals(False)
+        if self.rules:
+            self.listw.setCurrentRow(min(max(select, 0), len(self.rules) - 1))
+        self.load_rule(self.listw.currentRow())
+
+    def update_cats(self, *_):
+        """Fill the Move-to dropdown with the categories for this rule's type (blank first = keep as is)."""
+        kind = self.R.KIND_CHOICES[self.f_kinds.currentIndex()][1]
+        cats = sorted({it.category for it in self.lib.items
+                       if not it.deleted and (kind == "all" or it.kind == kind)}, key=str.lower)
+        text = self.f_move.currentText()
+        self.f_move.blockSignals(True)
+        self.f_move.clear()
+        self.f_move.addItem("")
+        self.f_move.addItems(cats)
+        self.f_move.setEditText(text)
+        self.f_move.blockSignals(False)
+
+    def cur(self):
+        i = self.listw.currentRow()
+        return self.rules[i] if 0 <= i < len(self.rules) else None
+
+    def save(self):
+        self.on_save([dict(r) for r in self.rules])
+
+    def stale(self):
+        """Any edit makes the old preview untrustworthy, so Apply waits for a fresh one."""
+        self.changed = {}
+        self.apply_btn.setEnabled(False)
+        if self.table.rowCount() or self.counts.text():
+            self.table.setRowCount(0)
+            self.counts.setText("")
+            self.summary.setText("You changed a rule, so the old preview was cleared. Press Preview again.")
+
+    def add_rule(self):
+        self.rules.append(self.R.new_rule())
+        self.save()
+        self.refill(len(self.rules) - 1)
+        self.stale()
+        self.f_pattern.setFocus()
+
+    def copy_rule(self):
+        r = self.cur()
+        if r:
+            c = dict(r)
+            c["name"] = (r["name"] + " (copy)").strip()
+            self.rules.insert(self.listw.currentRow() + 1, c)
+            self.save()
+            self.refill(self.listw.currentRow() + 1)
+            self.stale()
+
+    def remove_rule(self):
+        i = self.listw.currentRow()
+        if 0 <= i < len(self.rules):
+            del self.rules[i]
+            self.save()
+            self.refill(i)
+            self.stale()
+
+    def move_rule(self, d):
+        i = self.listw.currentRow()
+        j = i + d
+        if 0 <= i < len(self.rules) and 0 <= j < len(self.rules):
+            self.rules[i], self.rules[j] = self.rules[j], self.rules[i]
+            self.save()
+            self.refill(j)
+            self.stale()
+
+    def item_toggled(self, item):
+        i = self.listw.row(item)
+        if 0 <= i < len(self.rules):
+            self.rules[i]["on"] = item.checkState() == Qt.Checked
+            self.save()
+            self.stale()
+
+    # ---- the form -------------------------------------------------------
+    def load_rule(self, i):
+        r = self.rules[i] if 0 <= i < len(self.rules) else None
+        self._loading = True
+        self.form_box.setEnabled(r is not None)
+        if r is None:
+            r = self.R.new_rule()
+        kinds = [k for _, k in self.R.KIND_CHOICES]
+        fields = [k for _, k in self.R.FIELD_CHOICES]
+        self.f_name.setText(r["name"])
+        self.f_kinds.setCurrentIndex(kinds.index(r["kinds"]))
+        self.f_field.setCurrentIndex(fields.index(r["field"]))
+        self.f_pattern.setText(r["pattern"])
+        self.f_case.setChecked(r["ignore_case"])
+        self.f_rewrite_on.setChecked(r["rewrite_on"])
+        self.f_rewrite.setText(r["rewrite"])
+        self.update_cats()
+        self.f_move.setEditText(r["move"])
+        self.f_delete.setChecked(r["delete"])
+        self._loading = False
+        self.show_error()
+
+    def form_changed(self, *_):
+        r = self.cur()
+        if r is None or self._loading:
+            return
+        r.update(name=self.f_name.text(), kinds=self.R.KIND_CHOICES[self.f_kinds.currentIndex()][1],
+                 field=self.R.FIELD_CHOICES[self.f_field.currentIndex()][1], pattern=self.f_pattern.text(),
+                 ignore_case=self.f_case.isChecked(), rewrite_on=self.f_rewrite_on.isChecked(),
+                 rewrite=self.f_rewrite.text(), move=self.f_move.currentText(), delete=self.f_delete.isChecked())
+        it = self.listw.currentItem()
+        if it is not None:
+            it.setText(self.label(r))
+        self.save()
+        self.show_error()
+        self.stale()
+
+    def show_error(self):
+        r = self.cur()
+        self.f_err.setText("" if r is None else self.R.compile_rule(r)[1])
+
+    # ---- preview / apply ------------------------------------------------
+    def preview(self):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.changed, matches, errors = self.R.plan(self.lib.items, self.rules)
+        finally:
+            QApplication.restoreOverrideCursor()
+        parts = []
+        for i, r in enumerate(self.rules):
+            if not r["on"]:
+                continue
+            tag = self.label(r)
+            parts.append(f"{tag}: {errors[i]}" if i in errors else f"{tag}: {matches[i]:,} match{'es' if matches[i] != 1 else ''}")
+        self.counts.setText("   |   ".join(parts) if parts else "No rules are switched on.")
+        rows = list(self.changed.values())
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(min(len(rows), self.MAX_ROWS))
+        for n, st in enumerate(rows[:self.MAX_ROWS]):
+            it = st["item"]
+            action = "Delete" if st["deleted"] else ", ".join(
+                t for t, c in (("Rename", st["name"] != it.name), ("Move", st["category"] != it.category)) if c)
+            cells = [KIND_LABEL[it.kind], it.name, st["name"], it.category, st["category"], action]
+            for col, text in enumerate(cells):
+                cell = QTableWidgetItem(text)
+                cell.setBackground(QBrush(self.RED if st["deleted"] else self.YELLOW))
+                self.table.setItem(n, col, cell)
+        self.table.setUpdatesEnabled(True)
+        extra = f" (showing the first {self.MAX_ROWS:,})" if len(rows) > self.MAX_ROWS else ""
+        self.summary.setText(f"{len(rows):,} item{'s' if len(rows) != 1 else ''} would change{extra}.")
+        self.apply_btn.setEnabled(bool(rows) and not errors)
+        self.update_undo()
+
+    def confirm(self, ch):
+        ok, again = confirm_changes(self, ch)
+        if ok and again:
+            self.ask_box.setChecked(False)
+        return ok
+
+    def apply(self):
+        ch = self.R.to_changes(self.changed)
+        if not ch:
+            return
+        if self.ask_box.isChecked() and not self.confirm(ch):
+            return
+        self.on_apply(ch)
+        self.update_cats()
+        self.preview()                    # whatever is left to do after that
+
+    def undo_last(self):
+        if not self.lib.undo_stack or not self.on_undo:
+            return
+        self.on_undo()
+        self.update_cats()
+        self.preview()
+
+    def update_undo(self):
+        stack = self.lib.undo_stack
+        self.undo_btn.setEnabled(bool(stack))
+        self.undo_btn.setText(f"Undo last action ({stack[-1][0]})" if stack else "Undo last action")
+        self.undo_btn.setToolTip("Goes back one step. Undoes the last change made to your list (for example your last "
+                                 "Apply here). Click again to go back another step.")
+
+    def reload(self):
+        """Window shown again: your list may have changed since the last preview."""
+        self.update_cats()
+        self.changed = {}
+        self.table.setRowCount(0)
+        self.counts.setText("")
+        self.summary.setText("Preview shows exactly what would change. Nothing changes until you press Apply.")
+        self.apply_btn.setEnabled(False)
+        self.update_undo()

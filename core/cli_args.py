@@ -13,6 +13,9 @@ def parse_args(argv=None):
     ap.add_argument("--proxy", action="store_true",
                     help="relay streams through this PC instead of sending apps straight to the provider")
     ap.add_argument("--no-epg", action="store_true", help="don't serve a guide")
+    ap.add_argument("--placeholder-epg", action="store_true",
+                    help="fill channels that have no guide data with a placeholder (their name) in the merged guide "
+                         "(same as the tick box in the editor's Xtream server window)")
     ap.add_argument("--refresh-at", metavar="HH:MM",
                     help="with --serve: re-sync with the provider every day at this time (default 03:00, this PC's clock)")
     ap.add_argument("--no-auto-refresh", action="store_true", help="with --serve: turn off the daily re-sync")

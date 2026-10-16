@@ -294,6 +294,34 @@ try:
     # --- log masks the password
     check(srv.lines and not any("p1" == w for l in srv.lines for w in l.replace("/", " ").split()), "request log doesn't show passwords")
 
+
+    # --- placeholder guide entries (opt-in)
+    nog = next(i for i in lib.ordered("live") if not i.epg_id and not i.deleted and (int(i.id) - 1000) % 2 == 1)
+    srv.start(lib, LOCAL, "u1", "p1", "redirect", "merged", 12, host="127.0.0.1", placeholders=True)
+    t0 = time.time()
+    while "placeholders" not in srv.epg_status() and time.time() - t0 < 40:
+        time.sleep(0.3)
+    check("placeholders" in srv.epg_status(), f"guide rebuilt right away with placeholders on ({srv.epg_status()})")
+    row = next(e for e in api("get_live_streams") if e["stream_id"] == int(nog.id) or str(e["stream_id"]) == nog.id)
+    check(row["epg_channel_id"] == "xe." + nog.id, f"a channel with no EPG ID is handed a placeholder guide ID ({row['epg_channel_id']})")
+    gx = requests.get(f"http://127.0.0.1:{LOCAL}/xmltv.php", params={"username": "u1", "password": "p1"},
+                      headers={"Accept-Encoding": "identity"}).content
+    check(f'<channel id="xe.{nog.id}">'.encode() in gx and f"<title>{nog.name}</title>".encode() in gx,
+          "xmltv.php has a placeholder channel and shows named after the channel")
+    check(gx.count(f'<channel id="{fast.epg_id}">'.encode()) == 1 and f'channel="{fast.epg_id}"><title>{fast.name}'.encode() not in gx,
+          "channels with real guide data are left alone")
+    se3 = api("get_short_epg", stream_id=nog.id, limit=2)
+    check(se3["epg_listings"] and se3["epg_listings"][0]["epg_id"] == "xe." + nog.id, "short EPG answers for a placeholder channel")
+    mp = requests.get(f"http://127.0.0.1:{LOCAL}/get.php", params={"username": "u1", "password": "p1", "type": "m3u_plus"}).text
+    check(f'tvg-id="xe.{nog.id}"' in mp, "the get.php playlist carries the placeholder ID too")
+    srv.start(lib, LOCAL, "u1", "p1", "redirect", "merged", 12, host="127.0.0.1")
+    row = next(e for e in api("get_live_streams") if str(e["stream_id"]) == nog.id)
+    check(row["epg_channel_id"] is None, "with placeholders off, nothing is invented")
+    t0 = time.time()
+    while "placeholders" in srv.epg_status() and time.time() - t0 < 40:
+        time.sleep(0.3)
+    check("placeholders" not in srv.epg_status(), "switching them off rebuilds the guide without them")
+
     # --- speed on a big list
     big = Library()
     big.connection = dict(conn)

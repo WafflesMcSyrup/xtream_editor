@@ -88,7 +88,7 @@ def xmltv(kind):
             continue
         out.append(f'<channel id="{cid}"><display-name>{disp}</display-name></channel>')
         base = int(time.time() // 3600) * 3600
-        for k in range(ARGS.programmes):
+        for k in range(ARGS.programs):
             a, b = base + (k - 1) * 3600, base + k * 3600
             fmt = lambda t: time.strftime("%Y%m%d%H%M%S +0000", time.gmtime(t))
             prog.append(f'<programme start="{fmt(a)}" stop="{fmt(b)}" '
@@ -181,7 +181,7 @@ def main():
     ap.add_argument("--live", type=int, default=2000)
     ap.add_argument("--vod", type=int, default=800)
     ap.add_argument("--series", type=int, default=300)
-    ap.add_argument("--programmes", type=int, default=3, help="programmes per channel in the fake guides")
+    ap.add_argument("--programs", type=int, default=3, help="programs per channel in the fake guides")
     ap.add_argument("--verbose", action="store_true")
     ARGS = ap.parse_args()
     build()

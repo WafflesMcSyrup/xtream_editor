@@ -9,7 +9,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QItemSelectionModel, Qt, QTimer
+from PySide6.QtCore import QByteArray, QItemSelectionModel, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QI
 
 from core import epg, settings as cfg
 from core.common import APP_NAME, APP_VERSION, Cancelled
-from core import matcher
+from core import matcher, placeholder
 from core.casing import DEFAULT_STANDARD
 from core.exporter import export_list, export_playlists
 from core.models import KIND_LABEL, KINDS, Library
@@ -26,7 +26,7 @@ from core.webserver import FileServer, lan_ip
 from core.xtream_server import XtreamServer
 from core.xtream import DEFAULT_UA, XtreamClient, fetch_all, fetch_episodes, xmltv_url
 from .dialogs import (ConnectDialog, ImportFavoritesDialog, ListExportDialog, EpgSourcesDialog, EpisodesDialog, ExportDialog,
-                      CategoryManagerDialog, FindReplaceDialog, HelpDialog, SortDialog, TermsDialog, ServeDialog, XtreamServerDialog, about_text)
+                      CategoryManagerDialog, DuplicateFinderDialog, FindReplaceDialog, HelpDialog, RegexRulesDialog, SortDialog, TermsDialog, ServeDialog, XtreamServerDialog, about_text)
 from . import themes
 from .table_model import COLS, ItemModel
 from .workers import Task
@@ -74,13 +74,37 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._update_title()
         self._update_actions()
+        self._restore_layout()
         QTimer.singleShot(200, self._load_last)
+
+    # ---- remember window size, position, divider and column widths -------
+    def _restore_layout(self):
+        c = self.cfg
+        try:
+            geo = c.get("win_geometry")
+            if geo:
+                self.restoreGeometry(QByteArray.fromBase64(str(geo).encode("ascii")))
+            sizes = c.get("win_splitter")
+            if isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(n, int) and n > 0 for n in sizes):
+                self.split.setSizes(sizes)
+            cols = c.get("win_columns")
+            if isinstance(cols, list) and len(cols) == self.model.columnCount():
+                for i, w in enumerate(cols):
+                    if isinstance(w, int) and 20 <= w <= 4000:
+                        self.table.setColumnWidth(i, w)
+        except (TypeError, ValueError, UnicodeError):
+            pass                                    # a damaged setting just means the default layout
+
+    def _remember_layout(self):
+        self.cfg["win_geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        self.cfg["win_splitter"] = [int(n) for n in self.split.sizes()]
+        self.cfg["win_columns"] = [int(self.table.columnWidth(i)) for i in range(self.model.columnCount())]
 
     # ====================================================================
     # UI construction
     # ====================================================================
     def _build_ui(self):
-        split = QSplitter(Qt.Horizontal)
+        self.split = split = QSplitter(Qt.Horizontal)
         self.setCentralWidget(split)
 
         self.cats = QListWidget()
@@ -198,6 +222,12 @@ class MainWindow(QMainWindow):
                           "See every category in one list, rename or merge them, and fix capitalization.")
         self.a_catmgr.setShortcuts([QKeySequence("Ctrl+Shift+C"), QKeySequence("Ctrl+M")])   # second key as a fallback
         self.a_catmgr.setShortcutContext(Qt.ApplicationShortcut)
+        self.a_dupes = A("Find duplicates...", self.duplicate_finder, "Ctrl+Shift+U",
+                         "Look for the same movie, series or channel listed more than once, then keep, delete, rename or move.")
+        self.a_dupes.setShortcutContext(Qt.ApplicationShortcut)
+        self.a_rules = A("Regex rules...", self.regex_rules, "Ctrl+Shift+R",
+                         "Strip messy prefixes, move matches into a clean category, or delete them, using saved rules.")
+        self.a_rules.setShortcutContext(Qt.ApplicationShortcut)
         self.a_sort = A("Sort A-Z...", self.sort_az,
                         None, "Put items in alphabetical order, within each category or as one big list (one undo step).")
         self.a_help = A("Help contents", lambda: self.show_help(), "F1")
@@ -211,7 +241,7 @@ class MainWindow(QMainWindow):
                   self.a_export, self.a_list, self.a_xs, self.a_serve, None, self.a_quit):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("&Edit")
-        for a in (self.a_undo, self.a_redo, None, self.a_cat, self.a_catmgr, self.a_epgid, self.a_logo, self.a_find,
+        for a in (self.a_undo, self.a_redo, None, self.a_cat, self.a_catmgr, self.a_dupes, self.a_rules, self.a_epgid, self.a_logo, self.a_find,
                   None, self.a_fav, self.a_impfav, self.a_seen, None, self.a_del, self.a_restore):
             m.addSeparator() if a is None else m.addAction(a)
         mv = m.addMenu("Move")
@@ -553,6 +583,56 @@ class MainWindow(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def duplicate_finder(self):
+        dlg = getattr(self, "_dupes", None)
+        if dlg is None:
+            self._dupes = dlg = DuplicateFinderDialog(self, self.lib, self.apply_duplicate_changes,
+                                                       self.cfg.get("dupes_ask", True), self._save_dupes_ask, self.undo)
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        elif not dlg.isVisible():
+            dlg.reload()                      # old results may be stale
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def regex_rules(self):
+        dlg = getattr(self, "_rules", None)
+        if dlg is None:
+            self._rules = dlg = RegexRulesDialog(
+                self, self.lib, self.cfg.get("regex_rules", []), self._save_rules, self.apply_rule_changes,
+                self.cfg.get("rules_ask", True), self._save_rules_ask, self.undo)
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        elif not dlg.isVisible():
+            dlg.reload()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _save_rules(self, rules):
+        self.cfg["regex_rules"] = rules
+        cfg.save(self.cfg)
+
+    def _save_rules_ask(self, on):
+        self.cfg["rules_ask"] = bool(on)
+        cfg.save(self.cfg)
+
+    def apply_rule_changes(self, changes):
+        n = self.lib.change(changes, "regex rules")
+        self.category = set()                 # a category you had selected may be gone now
+        self.refresh()
+        self._after_change(f"Regex rules: {n:,} change{'s' if n != 1 else ''} applied.")
+
+    def _save_dupes_ask(self, on):
+        self.cfg["dupes_ask"] = bool(on)
+        cfg.save(self.cfg)
+
+    def apply_duplicate_changes(self, changes):
+        n = self.lib.change(changes, "resolve duplicates")
+        self.refresh()
+        self._after_change(f"Duplicates: {n:,} change{'s' if n != 1 else ''} applied.")
 
     def _save_acronyms(self, prefs):
         self.cfg.update(cat_std_on=bool(prefs.get("std_on", True)), cat_std_list=prefs.get("std", ""),
@@ -1163,15 +1243,16 @@ class MainWindow(QMainWindow):
                 wanted = {i.epg_id for i in lib.items if i.kind == "live" and i.epg_id
                           and not i.deleted and not i.gone} if "live" in v["kinds"] else set()
                 fname = "epg.xml.gz" if v["gz"] else "epg.xml"
+                fill = placeholder.fill_entries(lib.items) if v.get("placeholders") else None
                 epg_stats = epg.merge_xmltv(sources, wanted, os.path.join(v["folder"], fname), ua,
-                                            v["gz"], lambda p, m="": progress(int(p * 0.7), m), cancelled)
+                                            v["gz"], lambda p, m="": progress(int(p * 0.7), m), cancelled, fill)
                 if v["base_url"]:
                     header = f"{v['base_url']}/{fname}"
                 lo = 70
             os.makedirs(v["folder"], exist_ok=True)
             stats = export_playlists(lib, v["folder"], v["base"], v["kinds"], v["split"], v["live_ext"],
                                      header, v["prefix"], lambda p, m="": progress(lo + int(p * (100 - lo) / 100), m),
-                                     cancelled)
+                                     cancelled, bool(v.get("placeholders")))
             return stats, epg_stats
 
         def done(res):
@@ -1179,7 +1260,9 @@ class MainWindow(QMainWindow):
             lines = [f"Saved to {v['folder']}:"] + [f"  {os.path.basename(f)}" for f in stats["files"]]
             if epg_stats:
                 lines.append(f"  {'epg.xml.gz' if v['gz'] else 'epg.xml'} "
-                             f"({epg_stats['channels']:,} channels, {epg_stats['programmes']:,} programmes)")
+                             f"({epg_stats['channels']:,} channels, {epg_stats['programs']:,} programs)")
+                if epg_stats.get("placeholders"):
+                    lines.append(f"  {epg_stats['placeholders']:,} channels had no guide data, so they got a placeholder.")
             lines.append(f"\nLive: {stats['live']:,}   Movies: {stats['vod']:,}   Episodes: {stats['series_eps']:,}")
             if "series" in v["kinds"] and (stats["series_no_eps"] or no_eps):
                 lines.append(f"\n{max(stats['series_no_eps'], no_eps):,} series were skipped because their "
@@ -1233,7 +1316,7 @@ class MainWindow(QMainWindow):
                 return "This project has no provider login yet. Use File > Connect first."
             try:
                 self.xs.start(self.lib, st["xs_port"], st["xs_user"], st["xs_pass"], st["xs_mode"],
-                              st["xs_epg"], st["xs_epg_hours"])
+                              st["xs_epg"], st["xs_epg_hours"], placeholders=st.get("xs_placeholders", False))
             except OSError as e:
                 return f"{e}\nTry a different port."
             self.cfg.update(st)
@@ -1258,5 +1341,6 @@ class MainWindow(QMainWindow):
             return
         self.server.stop()
         self.xs.stop()
+        self._remember_layout()
         cfg.save(self.cfg)
         e.accept()
