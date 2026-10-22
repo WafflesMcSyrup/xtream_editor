@@ -418,6 +418,142 @@ def main():
         check(("name", "CNN") in [(f, v) for it, f, v in chg if it.id == "1"] and
               ("category", "US Local") in [(f, v) for it, f, v in chg if it.id == "1"], "to_changes gives Library.change() tuples")
         check(RR.normalize({"pattern": "x", "kinds": "bogus"})["kinds"] == "all", "damaged saved rules are repaired")
+        from core import carry as CY
+        ca = [Item("live", "1", "US| ESPN HD", "Sports", epg_id="espn.us", num=0), Item("live", "2", "CNN", "News", num=1),
+              Item("live", "3", "Old Show", "Misc", num=2), Item("live", "4", "CBS", "News", num=3),
+              Item("live", "5", "Kept Alone", "News", num=4), Item("vod", "6", "A Movie", "Films", num=0)]
+        ca[0].name, ca[0].fav, ca[0].edits = "ESPN", True, {"name"}
+        ca[2].deleted = True
+        cb = [Item("live", "9", "CNN International", "World", num=0), Item("live", "8", "ESPN HD", "Sport", epg_id="ESPN.us", num=1),
+              Item("live", "7", "Old Show", "Misc", num=2), Item("live", "6", "CBS HD", "General", num=3),
+              Item("live", "5", "Brand New", "X", num=4), Item("vod", "4", "A Movie", "Other", num=0)]
+        cp = CY.plan(ca, cb)
+        how = {b.id: h for a, b, h in cp["pairs"]}
+        check(how == {"8": "EPG ID", "7": "name", "6": "name"}, f"channels are matched by EPG ID, then by name ({how})")
+        check({b.id for b in cp["only_dst"]} == {"9", "5"} and [a.id for a in cp["only_src"]] == ["2", "5"],
+              "the leftovers on each side are listed")
+        lib_b = Library()
+        lib_b.items = cb
+        lib_b.index = {i.key: i for i in cb}
+        lib_b.change(cp["changes"], "copy")
+        by = {i.id: i for i in cb}
+        check(by["8"].name == "ESPN" and by["8"].fav and by["8"].category == "Sports", "names, favorites and categories are copied")
+        check(by["7"].deleted and not by["6"].deleted and by["6"].name == "CBS", "deleted channels are deleted here too")
+        check(by["9"].new and by["5"].new and not by["8"].new, "channels the other list lacks are marked new")
+        check(by["4"].category == "Other" and by["4"].name == "A Movie", "movies and series are left alone")
+        order = [i.id for i in sorted((i for i in cb if i.kind == "live"), key=lambda i: i.num)]
+        check(order[:3] == ["8", "7", "6"], f"channels follow the other list's order, new ones last ({order})")
+        lib_b.undo()
+        check(by["8"].name == "ESPN HD" and not by["8"].fav and not by["7"].deleted and not by["9"].new and by["9"].num == 0,
+              "one undo puts everything back")
+        cp2 = CY.plan(ca, cb, {"deleted": False, "fav": False, "name": False, "category": False, "order": False, "mark_new": False})
+        check(not cp2["changes"], "with everything unticked nothing changes")
+        from core import master as MS
+        ma = [Item("live", "1", "ESPN", "Sports", epg_id="espn.us", num=0), Item("live", "2", "CNN", "News", num=1),
+              Item("live", "3", "Gone", "X", num=2), Item("vod", "4", "Film", "Y", num=0)]
+        ma[0].fav, ma[0].edits = True, {"name"}
+        ma[2].deleted = True
+        mb = [Item("live", "1", "US| ESPN HD", "Sport", epg_id="ESPN.us", num=0), Item("live", "9", "BBC One", "UK", num=1)]
+        mst = Library()
+        i1, i2 = MS.add_source(mst, {"server": "http://a", "username": "x", "password": "1"}, "A"), \
+            MS.add_source(mst, {"server": "http://b", "username": "y", "password": "2"}, "B")
+        check((i1, i2) == (0, 1) and MS.add_source(mst, {"server": "http://a/", "username": "x", "password": "new"}, "A") == 0
+              and mst.sources[0]["conn"]["password"] == "new", "sources are found by server + username and keep the newest password")
+        check(MS.add_items(mst, i1, [ma[1], ma[0]]) == (2, 0), "adding channels copies them")
+        m0 = sorted(mst.items, key=lambda i: i.num)
+        check([m.name for m in m0] == ["ESPN", "CNN"] and m0[0].fav and "name" in m0[0].edits and m0[0].orig == "1" and m0[0].src == 0,
+              "they keep the source's order, edits, star and provider id")
+        check(MS.already_in(mst, i1, ma) == {"1", "2"} and not MS.already_in(mst, i2, ma), "channels already added are recognized, per provider")
+        dup = MS.duplicates(mst, i2, mb)
+        check(list(dup) == ["1"] and dup["1"].name == "ESPN", "the same channel from the other provider is flagged (guide ID or name)")
+        check(not MS.duplicates(mst, i1, ma), "a provider's own channels never flag against themselves")
+        MS.add_items(mst, i2, [mb[0]], {"1": dup["1"]})
+        check(len(mst.items) == 2 and any(m.src == 1 and m.orig == "1" and m.num == 0 for m in mst.items), "Replace swaps in the other provider's version in the same spot")
+        check(mst.conn_for(mst.items[-1]) == mst.sources[1]["conn"] and len(mst.logins()) == 2, "each channel finds its own login")
+        from core import names as _NM
+        check(_NM.add_tag("ESPN", "A") == "[A] ESPN" and _NM.add_tag("[A] ESPN", "A") == "[A] ESPN" and _NM.add_tag("X", " ") == "X"
+              and _NM.remove_tag("[Trex] CNN", ["A", "Trex"]) == "CNN" and _NM.remove_tag("[HD] CNN", ["A"]) == "[HD] CNN",
+              "source tags go on once, come off again, and leave other brackets alone")
+        mst.sources[0]["tag"], mst.sources[1]["tag"] = "Home", ""
+        got = dict((it.name, n) for it, n in _NM.plan(mst.items, "addtag", tags=[MS.tag_for(mst, 0), MS.tag_for(mst, 1)]))
+        check(MS.tag_for(mst, 1) == "B" and "[B] ESPN HD" in got.values() or "[Home] CNN" in got.values(), "each channel gets its own source's tag (blank tags fall back to A, B...)")
+        check(not _NM.plan([Item("live", "z", "Plain", "x")], "addtag", tags=["A"]), "channels outside a master list are skipped")
+        try:
+            mst.merge_server([])
+            check(False, "a master can't be re-synced")
+        except RuntimeError:
+            check(True, "a master can't be re-synced")
+        check([b.id for a, b in cp["deleted_there"]] == ["7"], "channels deleted in the other list are listed on their own tab")
+        cp3 = CY.plan(ca, cb, {"deleted": False})
+        check(not any(f == "deleted" for it, f, v in cp3["changes"]), "unticking 'delete' leaves them alone here")
+        cb[2].deleted = True
+        check(not CY.plan(ca, cb)["deleted_there"], "ones already deleted here aren't shown again")
+        cb[2].deleted = False
+        cf = CY.plan(ca, cb, {"fav_only": True})
+        check([b.id for a, b, h in cf["pairs"]] == ["8"] and not cf["only_dst"] and
+              not any(f in ("deleted", "num", "new") for it, f, v in cf["changes"]),
+              "favorites-only covers just the starred channels and skips the whole-list steps")
+        bi = {b["id"]: b for b in RR.builtin_rules()}
+        check(len(bi) == 4 and not any(b["on"] for b in bi.values()) and all(not RR.compile_rule(b)[1] for b in bi.values()),
+              "four built-in rules, all valid and switched off to start with")
+        check(RR.builtin_rules({"super_names": True})[0]["on"] is True, "built-in on/off comes from the saved states")
+        bn = [Item("live", "b1", "BBC ONE ᴴᴰ", "UK | General ᴿᴬᵂ", num=1), Item("live", "b2", "ESPN ⁶⁰ᶠᵖˢ", "Sports", num=2),
+              Item("live", "b3", "US| CNN", "US | News", num=3), Item("vod", "b4", "IT: Chapter Two", "Horror", num=1),
+              Item("live", "b5", "|UK| Sky News", "News", num=4), Item("live", "b6", "[CA] CBC", "News", num=5)]
+        got, mt, er = RR.plan(bn, [dict(bi["super_names"], on=True), dict(bi["super_cats"], on=True), dict(bi["country_names"], on=True)])
+        res = {st["item"].id: (st["name"], st["category"]) for st in got.values()}
+        check(not er and res["b1"] == ("BBC ONE", "UK | General") and res["b2"][0] == "ESPN", "superscript rules clean names and categories")
+        check(res["b3"][0] == "CNN" and res["b5"][0] == "Sky News" and res["b6"][0] == "CBC" and "b4" not in res,
+              "country prefixes come off names, and a real title like 'IT: Chapter Two' is left alone")
+        got, mt, er = RR.plan(bn, [dict(bi["country_cats"], on=True)])
+        check({st["item"].id: st["category"] for st in got.values()} == {"b1": "General ᴿᴬᵂ", "b3": "News"},
+              "country prefixes come off categories")
+        import requests as _rq
+        from core import xtream as _xt
+        _calls = []
+        class _R:
+            status_code = 200
+            def json(self): return {"user_info": {"auth": 1}}
+        _cl = _xt.XtreamClient("http://x:1", "u", "p")
+        def _flaky(url, params=None, timeout=None):
+            _calls.append(1)
+            if len(_calls) < 3:
+                raise _rq.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(1606 bytes read, 8634 more expected)")
+            return _R()
+        _cl.session.get = _flaky
+        _sleep, _xt.time.sleep = _xt.time.sleep, lambda s: None
+        check(_cl._api()["user_info"]["auth"] == 1 and len(_calls) == 3, "a cut-off download is retried and then works")
+        def _dead(url, params=None, timeout=None):
+            raise _rq.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(1 bytes read, 2 more expected)")
+        _cl.session.get = _dead
+        try:
+            _cl._api()
+            check(False, "a download that keeps getting cut off ends in a clear message")
+        except _xt.XtreamError as e:
+            check("kept dropping" in str(e) and "one connection per account" in str(e), "a download that keeps getting cut off ends in a clear message")
+        _xt.time.sleep = _sleep
+        from core import names as NM
+        nm = lambda n, op, **kw: NM.new_name(n, op, **kw)
+        check(nm("24/7 NEWS 2", "proper") == "24/7 News 2" and nm("CBS SPORTS 1ST HALF", "proper", extra={"cbs"}) == "CBS Sports 1st Half",
+              "Proper Case leaves numbers alone and handles 1st/2nd")
+        check(nm("ESPN 4K HD", "proper", extra={"espn"}) == "ESPN 4K HD", "acronyms and 4K/HD stay uppercase")
+        check(nm("  too   many  spaces ", "trim") == "too many spaces", "trim squeezes spaces")
+        check(nm("US | CNN", "prefix", prefix="us |") == "CNN" and nm("UK | BBC", "prefix", prefix="US |") == "UK | BBC",
+              "remove a prefix only when the name starts with it")
+        check(nm("HD CNN HD", "replace", find="hd", repl="") == "CNN" and
+              nm("HD CNN", "replace", find="hd", repl="", ignore_case=False) == "HD CNN", "find and replace, with case option")
+        check(nm("X", "replace", find="x", repl="") == "X", "a name is never blanked")
+        its2 = [Item("live", "1", "CNN NEWS", "A", num=1), Item("live", "2", "Already Fine", "A", num=2),
+                Item("vod", "3", "THE MOVIE", "B", num=1), Item("live", "4", "OLD NAME", "A", num=3)]
+        its2[3].deleted = True
+        got = NM.plan(its2, "proper", extra={"cnn"})
+        check([i.id for i, _ in got] == ["1", "3"] and got[0][1] == "CNN News", "plan lists only names that change, skipping deleted")
+        check(RR.normalize({"pattern": "x"})["only_cat"] == "", "rules saved before 'only in category' still load")
+        only = dict(base_rule, pattern=r"^US \| (.*)", rewrite_on=True, rewrite="$1", only_cat="us | news")
+        ch, mt, er = RR.plan(its, [only])
+        check(mt == [1] and set(ch) == {("live", "1")}, f"'only in category' limits a rule to that category ({mt})")
+        ch, mt, er = RR.plan(its, [local, dict(only, only_cat="US Local")])
+        check(mt == [2, 2], f"a later rule sees the category an earlier rule moved items into ({mt})")
     finally:
         srv.terminate()
     print("\nFAILED: %d" % check.failed if check.failed else "\nALL PASSED")

@@ -817,8 +817,315 @@ try:
     rd.move_rule(-1)
     rd.remove_rule()
     check(len(win.cfg["regex_rules"]) == 1, "copy, move and remove keep the saved list in step")
+    # --- built-in rules
+    check(rd.listw.count() == 4 + len(rd.rules) and all(rd.listw.item(i).checkState() == Qt.Unchecked for i in range(4)),
+          "the four built-in rules are listed first, switched off")
+    rd.listw.setCurrentRow(0)
+    check(not rd.form_box.isEnabled() and not rd.row_btns["Remove"].isEnabled() and not rd.row_btns["Up"].isEnabled()
+          and rd.row_btns["Copy"].isEnabled(), "a built-in rule can't be edited, removed or moved, but can be copied")
+    before = len(rd.rules)
+    rd.remove_rule()
+    check(len(rd.rules) == before, "Remove does nothing to a built-in rule")
+    rd.listw.item(0).setCheckState(Qt.Checked)
+    check(win.cfg.get("builtin_rules", {}).get("super_names") is True and rd.builtin[0]["on"], "switching one on is remembered")
+    from core.models import Item as _It4
+    sp = _It4("live", "spA", "ZZS NEWS ᴴᴰ", "ZZS Cat", num=nb + 50)
+    win.lib.items.append(sp)
+    win.lib.index[sp.key] = sp
+    ons = [r_["on"] for r_ in rd.rules]
+    for r_ in rd.rules:
+        r_["on"] = False
+    rd.preview()
+    check(any("ZZS NEWS ᴴᴰ" == rd.table.item(i, 1).text() and rd.table.item(i, 2).text() == "ZZS NEWS" for i in range(rd.table.rowCount())),
+          "a switched-on built-in rule shows up in the preview")
+    rd.listw.setCurrentRow(1)
+    n_before = len(rd.rules)
+    rd.copy_rule()
+    check(len(rd.rules) == n_before + 1 and rd.cur_index() >= 0 and rd.form_box.isEnabled() and not rd.cur().get("builtin"),
+          "Copy turns a built-in rule into one you can edit")
+    rd.remove_rule()
+    for r_, o_ in zip(rd.rules, ons):
+        r_["on"] = o_
+    rd.refill(4)                                         # redraw the list so the tick boxes match
+    rd.listw.item(0).setCheckState(Qt.Unchecked)
+    win.lib.items.remove(sp)
+    del win.lib.index[sp.key]
+    # --- "Only in category", and opening the window from the sidebar's right-click menu
+    rd.f_only.setEditText("")
+    win.regex_rules(False)                              # what the Edit menu action sends
+    check(rd.f_only.currentText() == "", "opened normally, the Only-in-category box stays as it was")
+    win.regex_rules("ZZR | Sports")
+    check(rd.f_only.currentText() == "ZZR | Sports" and rd.cur()["only_cat"] == "ZZR | Sports"
+          and win.cfg["regex_rules"][0]["only_cat"] == "ZZR | Sports", "opened from the sidebar, the category is filled in and saved")
+    check("ZZR | Sports" in [rd.f_only.itemText(i) for i in range(rd.f_only.count())], "the box is a dropdown of categories too")
+    rd.f_kinds.setCurrentIndex(0)
+    rd.f_field.setCurrentIndex(0)
+    rd.f_pattern.setText("ZZR|Plain")
+    rd.f_rewrite_on.setChecked(True)
+    rd.f_rewrite.setText("X")
+    rd.f_move.setEditText("")
+    rd.form_changed()
+    rd.preview()
+    check(rd.table.rowCount() == 2 and "Plain Name" not in [rd.table.item(i, 1).text() for i in range(rd.table.rowCount())],
+          "the rule only touches items in that category")
+    rd.f_only.setEditText("")
+    rd.preview()
+    check(rd.table.rowCount() == 3, "cleared, it works on every category again")
     rd.close()
     win.lib.items = [i for i in win.lib.items if not i.id.startswith("rx")]
+    # --- double-click a category = rename / merge
+    _asked = []
+    _real_gt = mw.QInputDialog.getText
+    mw.QInputDialog.getText = staticmethod(lambda *a, **k: (_asked.append(k.get("text")) or "", False))
+    win.refresh()
+    first_cat = next(i for i in range(win.cats.count()) if win.cats.item(i).data(Qt.UserRole) is not None)
+    win._cat_double_clicked(win.cats.item(0))
+    check(not _asked, "double-clicking 'All categories' does nothing")
+    win._cat_double_clicked(win.cats.item(first_cat))
+    check(len(_asked) == 1 and _asked[0] == win.cats.item(first_cat).data(Qt.UserRole), "double-clicking a category opens Rename / merge")
+    mw.QInputDialog.getText = _real_gt
+    # --- copy edits from another project
+    from core.models import Item as _It5
+    saved_items, saved_index = win.lib.items, win.lib.index
+    mine = [_It5("live", "cpB1", "ESPN HD", "Sport", epg_id="espn.zz", num=0), _It5("live", "cpB2", "Brand New Chan", "X", num=1),
+            _It5("live", "cpB3", "Old Show", "Misc", num=2)]
+    win.lib.items = list(mine)
+    win.lib.index = {i.key: i for i in mine}
+    other = Library()
+    oa = [_It5("live", "cpA1", "US| ESPN", "Sports", epg_id="espn.zz", num=0), _It5("live", "cpA2", "Old Show", "Misc", num=1)]
+    oa[0].name, oa[0].fav, oa[0].edits = "ESPN", True, {"name"}
+    oa[1].deleted = True
+    other.items = oa
+    other.index = {i.key: i for i in oa}
+    cpath = os.path.join(TMP, "other.xtp")
+    other.save(cpath)
+    win.copy_edits()
+    cd = win._carry
+    check(cd.isVisible() and not cd.isModal() and not cd.apply_btn.isEnabled(), "copy edits window opens, Apply is off")
+    cd.preview()
+    check("Choose the project" in cd.summary.text(), "it asks for the other project first")
+    cd.set_source(cpath)
+    cd.ask_box.setChecked(False)
+    cd.preview()
+    check(len(cd.result["pairs"]) == 2 and cd.apply_btn.isEnabled() and "ESPN HD" not in [m.name for m in mine][1:] and mine[0].name == "ESPN HD",
+          f"preview finds the matches and changes nothing yet ({cd.counts.text()})")
+    check(cd.tabs.tabText(1).startswith("Only in this list (1)"), "the 'only in this list' tab counts the new channel")
+    cd.apply()
+    check(mine[0].name == "ESPN" and mine[0].fav and mine[2].deleted and mine[1].new, "Apply copies names, stars, deletes and marks new")
+    check(not cd.apply_btn.isEnabled(), "nothing left to do afterwards")
+    check(cd.tabs.tabText(3).startswith("Deleted in the other list") and "fav_only" in cd.opts, "deleted tab and favorites-only box exist")
+    cd.fav_only.setChecked(True)
+    check(not cd.opts["order"].isEnabled() and not cd.opts["mark_new"].isEnabled(), "favorites-only turns off the whole-list steps")
+    cd.fav_only.setChecked(False)
+    cd.undo_last()
+    check(mine[0].name == "ESPN HD" and not mine[2].deleted and not mine[1].new, "Undo last action reverses it")
+    cd.close()
+    win.lib.items, win.lib.index = saved_items, saved_index
+    # --- master list
+    from core.models import Library as _L6
+    def _mk(name, conn, rows):
+        lb = _L6()
+        lb.connection = conn
+        lb.items = [_It5("live", i, n, c, epg_id=e, num=k) for k, (i, n, c, e) in enumerate(rows)]
+        lb.index = {x.key: x for x in lb.items}
+        p = os.path.join(TMP, name + ".xtp")
+        lb.save(p)
+        return p, lb
+    pA, la = _mk("ListA", {"server": "http://aa.test", "username": "a", "password": "1"},
+                 [("1", "ESPN", "Sports", "espn.us"), ("2", "CNN", "News", ""), ("3", "Old", "Misc", "")])
+    pB, lbb = _mk("ListB", {"server": "http://bb.test", "username": "b", "password": "2"},
+                  [("1", "ESPN HD", "Sport", "espn.us"), ("7", "BBC One", "UK", "")])
+    la.items[2].deleted = True
+    la.items[1].fav = True
+    la.save(pA)
+    pM = os.path.join(TMP, "master_ui.xtp")
+    win.master_list()
+    md = win._master
+    check(md.isVisible() and not md.isModal(), "master list window opens")
+    md.panes[0].set_path(pA)
+    md.panes[1].set_path(pB)
+    check(md.panes[0].table.rowCount() == 2 and md.panes[1].table.rowCount() == 2, "each side lists its own kept Live channels (deleted ones hidden)")
+    md.panes[0].favs.setChecked(True)
+    check(md.panes[0].table.rowCount() == 1 and md.panes[0].table.item(0, 0).text() == "CNN", "favorites-only filter works")
+    md.panes[0].favs.setChecked(False)
+    md.panes[0].add_shown()
+    check("choose the master" in md.summary.text().lower() and not os.path.exists(pM), "adding needs a master file first")
+    check(md.set_master(pM), "a new master file is accepted")
+    md.panes[0].add_shown()
+    mm = Library()
+    mm.load(pM)
+    check(mm.is_master and len(mm.items) == 2 and md.panes[0].table.rowCount() == 0, "channels land in the saved master and leave the 'not yet added' list")
+    box_calls = []
+    _RealMB = mw.QMessageBox if hasattr(mw, "QMessageBox") else None
+    import ui.dialogs as _dl
+    class _Box:
+        def __init__(self, *a): self.btns = {}
+        def setWindowTitle(self, t): pass
+        def setText(self, t): box_calls.append(t)
+        def setInformativeText(self, t): pass
+        def setDetailedText(self, t): pass
+        def addButton(self, x, role=None):
+            b = object() if isinstance(x, str) else x
+            self.btns[x if isinstance(x, str) else "cancel"] = b
+            return b
+        def exec(self): pass
+        def clickedButton(self): return self.btns["Skip these"]
+    _dl.QMessageBox_orig = _dl.QMessageBox
+    class _MB(_Box):
+        Cancel, AcceptRole, RejectRole, DestructiveRole = _dl.QMessageBox.Cancel, _dl.QMessageBox.AcceptRole, _dl.QMessageBox.RejectRole, _dl.QMessageBox.DestructiveRole
+    _dl.QMessageBox = _MB
+    md.panes[1].set_path(pB)
+    md.panes[1].add_shown()
+    _dl.QMessageBox = _dl.QMessageBox_orig
+    mm.load(pM)
+    check(box_calls and len(mm.items) == 3 and sorted(m.name for m in mm.items) == ["BBC One", "CNN", "ESPN"],
+          "the same channel from the other provider asks, and 'Skip these' adds only the new one")
+    check(md.open_btn.isEnabled() and len(mm.sources) == 2, "the master remembers both providers")
+    check("a @ aa.test" in md.panes[0].login_lbl.text() and "b @ bb.test" in md.panes[1].login_lbl.text(), "each side shows which login it plays from")
+    check("same login" not in md.summary.text(), "no warning when the logins differ")
+    _pB2, _ = _mk("ListB2", {"server": "http://aa.test", "username": "a", "password": "1"}, [("5", "X", "Y", "")])
+    md.panes[1].set_path(_pB2)
+    check("same login" in md.summary.text(), "a warning appears when both sides have the same login")
+    md.panes[1].set_path(pB)
+    mp = md.mpane
+    check(mp.table.rowCount() == 3 and mp.title() == "Master list: 3 channels" and
+          {mp.table.item(r, 3).text() for r in range(3)} == {"ListA", "ListB"}, "the third window shows the master and where each channel came from")
+    names = lambda: [mp.table.item(r, 0).text() for r in range(mp.table.rowCount())]
+    first = names()
+    mp.table.selectRow(2)
+    mp.move("top")
+    check(names()[0] == first[2] and names()[1:] == first[:2], "Move to top reorders the master")
+    mp.table.selectRow(0)
+    mp.move("down")
+    check(names()[1] == first[2], "Down moves one place, and the selection follows")
+    mm.load(pM)
+    check([i.name for i in mm.ordered("live")] == names(), "the new order is saved to the file")
+    mp.search.setText("zzz")
+    check(not mp.btns["up"].isEnabled(), "reordering is off while a search is active")
+    mp.search.setText("")
+    pa0 = md.panes[0]
+    before = pa0.table.rowCount()
+    mp.table.selectRow(0)
+    gone_name = names()[0]
+    mp.remove()
+    mm.load(pM)
+    check(len(mm.items) == 2 and gone_name not in names(), "Remove selected takes it out and saves")
+    check(pa0.table.rowCount() + md.panes[1].table.rowCount() >= before, "removed channels come back in the source lists")
+    md.close()
+    win.lib.is_master_before = win.lib.is_master
+    win.lib, _keep = mm, win.lib
+    shown = []
+    win.info = lambda t, m: shown.append(t)
+    win.connect_and_fetch()
+    win.lib = _keep
+    check(shown == ["Master list"], "a master list can't be fetched from a provider")
+    # --- source column, filter and tags in a master list
+    win._set_lib(mm)
+    win.refresh()
+    check(not win.table.isColumnHidden(7) and win.src_box.isVisible() is not None and win.src_box.count() == 3, "a master list shows the Source column and a source filter")
+    col = {win.model.data(win.model.index(r, 7)) for r in range(win.model.rowCount())}
+    check(col == {"ListA", "ListB"} or col == {"ListA"} or col == {"ListB"}, f"the Source column names each channel's list ({col})")
+    n_all = win.model.rowCount()
+    win.src_box.setCurrentIndex(1)
+    check(0 < win.model.rowCount() <= n_all and {win.model.data(win.model.index(r, 7)) for r in range(win.model.rowCount())} == {"ListA"}, "the source filter limits the list")
+    win.src_box.setCurrentIndex(0)
+    win.name_manager()
+    nd2 = win._names
+    check(nd2.lib is mm and nd2.op.findData("addtag") >= 0, "the Name manager follows the open project and offers source tags")
+    nd2.kind.setCurrentIndex(nd2.kind.findData("live"))
+    nd2.scope.setCurrentIndex(nd2.scope.findData("all"))
+    nd2.op.setCurrentIndex(nd2.op.findData("addtag"))
+    check(nd2.tag_box.isVisible() or not nd2.isVisible(), "tag boxes appear for the tag action")
+    nd2.tag_edits[0].setText("Home")
+    nd2.ask_box.setChecked(False)
+    nd2.preview()
+    nd2.apply()
+    check(all(i.name.startswith("[Home] ") or i.name.startswith("[B] ") for i in mm.items) and mm.sources[0]["tag"] == "Home",
+          "Add source tag puts [tag] in front of every name, using each list's own tag")
+    nd2.op.setCurrentIndex(nd2.op.findData("rmtag"))
+    nd2.preview()
+    nd2.apply()
+    check(not any(i.name.startswith("[") for i in mm.items), "Remove source tag takes them back off")
+    nd2.close()
+    win._set_lib(_keep)
+    win.refresh()
+    check(win.table.isColumnHidden(7) and not win.src_box.isVisible() or win.table.isColumnHidden(7), "an ordinary project hides the Source column again")
+    nd2.reload()
+    check(nd2.op.findData("addtag") < 0, "and the Name manager drops the tag actions")
+    # --- close project
+    win.lib.dirty = False
+    win.close_project()
+    check(not win.lib.items and not win.lib.path and not win.lib.connection and win.cfg.get("last_project") == ""
+          and "untitled" in win.windowTitle(), "Close project leaves a blank editor with no login and no last project")
+    win._set_lib(_keep)
+    # --- second login
+    class _FakeDlg:
+        def __init__(self, *a, **k): pass
+        def exec(self): return True
+        def values(self): return {"server": "http://127.0.0.1:1", "username": "two", "password": "pw2", "ua": "t"}
+    _RealCD = mw.ConnectDialog
+    mw.ConnectDialog = _FakeDlg
+    _real_auth = mw.XtreamClient.authenticate
+    mw.XtreamClient.authenticate = lambda self: {"user_info": {"status": "Active", "max_connections": "1"}}
+    win.lib.dirty = False
+    win.second_login()
+    wait(win)
+    check(win.lib.connection2.get("username") == "two" and win.lib.dirty, "Second login is saved in the project and marks it unsaved")
+    mw.ConnectDialog = _RealCD
+    mw.XtreamClient.authenticate = _real_auth
+    win.lib.connection2 = {}
+    win.lib.dirty = False
+    # --- name manager
+    from core.models import Item as _It3
+    nb = max(i.num for i in win.lib.items) + 1
+    n1 = _It3("live", "nmA", "ZZN SPORTS ONE", "ZZN Cat", num=nb)
+    n2 = _It3("live", "nmB", "ZZN News 24/7", "ZZN Cat", num=nb + 1)
+    n3 = _It3("vod", "nmC", "ZZN MOVIE", "ZZN Films", num=nb)
+    win.lib.items += [n1, n2, n3]
+    win.lib.index.update({it.key: it for it in (n1, n2, n3)})
+    win.name_manager()
+    nd = win._names
+    check(nd.isVisible() and not nd.isModal() and not nd.apply_btn.isEnabled(), "name manager opens, Apply is off")
+    nd.kind.setCurrentIndex(nd.kind.findData("live"))
+    nd.f_find.setText("zzn")
+    nd.op.setCurrentIndex(nd.op.findData("proper"))
+    nd.scope.setCurrentIndex(nd.scope.findData("all"))
+    nd.preview()
+    zz = [r for r in range(nd.table.rowCount()) if nd.table.item(r, 1).text() == "ZZN SPORTS ONE"]
+    check(len(zz) == 1 and nd.table.item(zz[0], 2).text() == "Zzn Sports One", "preview shows the Proper Case result for live items")
+    check(nd.apply_btn.isEnabled() and n1.name == "ZZN SPORTS ONE", "Apply is on, and preview changed nothing")
+    nd.f_find.setText("x")
+    nd.op.setCurrentIndex(nd.op.findData("trim"))
+    check(not nd.apply_btn.isEnabled() and nd.table.rowCount() == 0, "changing the action clears the old preview")
+    nd.op.setCurrentIndex(nd.op.findData("proper"))
+    nd.ask_box.setChecked(False)
+    nd.preview()
+    win.cfg["names_ask"] = True
+    from ui import dialogs as _dg
+    _real_conf = _dg.confirm_changes
+    _dg.confirm_changes = lambda parent, ch: (False, False)
+    nd.ask_box.setChecked(True)
+    nd.apply()
+    check(n1.name == "ZZN SPORTS ONE", "Cancel on the popup changes nothing")
+    _dg.confirm_changes = _real_conf
+    nd.ask_box.setChecked(False)
+    nd.apply()
+    check(n1.name == "Zzn Sports One" and n3.name == "ZZN MOVIE", "Apply renames live items only, when only Live is chosen")
+    check("name" in n1.edits, "renamed items count as edited, so a re-sync keeps them")
+    check(win.cfg.get("names_ask") is False, "turning the ask box off is remembered")
+    nd.undo_last()
+    check(n1.name == "ZZN SPORTS ONE", "Undo last action brings the old name back")
+    nd.op.setCurrentIndex(nd.op.findData("prefix"))
+    nd.f_prefix.setText("zzn ")
+    nd.kind.setCurrentIndex(0)
+    nd.preview()
+    check({it.id for it, _ in nd.changed} == {"nmA", "nmB", "nmC"}, "remove a prefix works across all types")
+    nd.scope.setCurrentIndex(nd.scope.findData("selected"))
+    nd.get_selected = lambda: [n3]
+    nd.preview()
+    check([it.id for it, _ in nd.changed] == ["nmC"], "scope can be just the selected rows")
+    nd.close()
+    win.lib.items = [i for i in win.lib.items if not i.id.startswith("nm")]
     # --- placeholder guide options in the dialogs
     from ui.dialogs import ExportDialog as _ED, XtreamServerDialog as _XD
     xd = _XD(win, win.xs, dict(win.cfg, xs_pass="pw"), lambda st: None, lambda: None, lambda: None)

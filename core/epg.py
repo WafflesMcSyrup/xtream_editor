@@ -96,14 +96,22 @@ def download(url, dest, ua, progress=None, cancelled=never_cancelled):
             r.raise_for_status()
             total = int(r.headers.get("Content-Length") or 0)
             done = 0
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(1 << 16):
-                    if cancelled():
-                        raise Cancelled()
-                    f.write(chunk)
-                    done += len(chunk)
-                    if progress:
-                        progress(done, total)
+            tmp = f"{dest}.{os.getpid()}.part"      # own temp name, so two servers fetching the same guide don't mix
+            try:
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(1 << 16):
+                        if cancelled():
+                            raise Cancelled()
+                        f.write(chunk)
+                        done += len(chunk)
+                        if progress:
+                            progress(done, total)
+                os.replace(tmp, dest)
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
     except requests.RequestException as e:
         raise EpgError(f"{url}: {e}")
 

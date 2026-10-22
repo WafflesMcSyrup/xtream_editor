@@ -26,7 +26,7 @@ from core.webserver import FileServer, lan_ip
 from core.xtream_server import XtreamServer
 from core.xtream import DEFAULT_UA, XtreamClient, fetch_all, fetch_episodes, xmltv_url
 from .dialogs import (ConnectDialog, ImportFavoritesDialog, ListExportDialog, EpgSourcesDialog, EpisodesDialog, ExportDialog,
-                      CategoryManagerDialog, DuplicateFinderDialog, FindReplaceDialog, HelpDialog, RegexRulesDialog, SortDialog, TermsDialog, ServeDialog, XtreamServerDialog, about_text)
+                      CategoryManagerDialog, CopyEditsDialog, DuplicateFinderDialog, MasterListDialog, FindReplaceDialog, HelpDialog, NameManagerDialog, RegexRulesDialog, SortDialog, TermsDialog, ServeDialog, XtreamServerDialog, about_text)
 from . import themes
 from .table_model import COLS, ItemModel
 from .workers import Task
@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
         self.cats.itemSelectionChanged.connect(self._cats_selection_changed)
         self.cats.setContextMenuPolicy(Qt.CustomContextMenu)
         self.cats.customContextMenuRequested.connect(self._cats_menu)
+        self.cats.itemDoubleClicked.connect(self._cat_double_clicked)
         split.addWidget(self.cats)
 
         right = QWidget()
@@ -133,7 +134,14 @@ class MainWindow(QMainWindow):
         for label, key in SHOW_MODES:
             self.mode.addItem(label, key)
         self.mode.currentIndexChanged.connect(lambda _: self.refresh())
+        self.src_lbl = QLabel("Source:")
+        self.src_box = QComboBox()
+        self.src_box.currentIndexChanged.connect(lambda _: self.refresh())
+        self.src_lbl.setVisible(False)
+        self.src_box.setVisible(False)
         row.addWidget(self.search, 1)
+        row.addWidget(self.src_lbl)
+        row.addWidget(self.src_box)
         row.addWidget(QLabel("Show:"))
         row.addWidget(self.mode)
         rl.addLayout(row)
@@ -151,8 +159,9 @@ class MainWindow(QMainWindow):
         hh = self.table.horizontalHeader()
         hh.setStretchLastSection(True)
         hh.setSortIndicatorShown(True)
-        for i, w in enumerate([55, 330, 190, 170, 220, 60, 120]):
+        for i, w in enumerate([55, 330, 190, 170, 220, 60, 120, 130]):
             self.table.setColumnWidth(i, w)
+        self.table.setColumnHidden(7, True)         # the Source column only shows for a master list
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.table.selectionModel().selectionChanged.connect(lambda *_: self._update_status())
@@ -182,11 +191,16 @@ class MainWindow(QMainWindow):
                            "Log in and pull every channel, movie and series. Re-running keeps your edits.")
         self.a_new = A("New project", self.new_project)
         self.a_open = A("Open project...", self.open_project, QKeySequence.Open)
+        self.a_close = A("Close project", self.close_project, "Ctrl+W",
+                         "Empty the editor (asks about unsaved changes first). Handy before building a master list from the project you had open.")
         self.a_save = A("Save project", self.save_project, QKeySequence.Save)
         self.a_saveas = A("Save project as...", self.save_project_as, "Ctrl+Shift+S")
         self.a_export = A("Export playlist...", self.export, "Ctrl+E")
         self.a_list = A("Export list to CSV / TXT...", self.export_list_file, None,
                         "Save a simple list of names and categories (everything, or just the categories you pick).")
+        self.a_conn2 = A("Second login...", self.second_login, None,
+                         "Save a second provider account in this project, to run a second local server with it "
+                         "(same list, different login).")
         self.a_xs = A("Xtream server for IPTV apps...", self.xtream_server, "Ctrl+Shift+X",
                       "Let IPTV apps log into this PC like an Xtream provider and get your edited list.")
         self.a_serve = A("Serve files on home network...", self.serve)
@@ -222,6 +236,13 @@ class MainWindow(QMainWindow):
                           "See every category in one list, rename or merge them, and fix capitalization.")
         self.a_catmgr.setShortcuts([QKeySequence("Ctrl+Shift+C"), QKeySequence("Ctrl+M")])   # second key as a fallback
         self.a_catmgr.setShortcutContext(Qt.ApplicationShortcut)
+        self.a_names = A("Name manager...", self.name_manager, "Ctrl+Shift+N",
+                         "Bulk tidy-ups for item names: Proper Case, trim spaces, remove a prefix, find and replace.")
+        self.a_names.setShortcutContext(Qt.ApplicationShortcut)
+        self.a_carry = A("Copy edits from another project...", self.copy_edits, None,
+                         "Make this list's Live channels follow another project you've edited: deleted, starred, renamed, moved.")
+        self.a_master = A("Build a master list...", self.master_list, None,
+                          "Pick channels from two provider projects and collect them in one master list that plays each channel from its own provider.")
         self.a_dupes = A("Find duplicates...", self.duplicate_finder, "Ctrl+Shift+U",
                          "Look for the same movie, series or channel listed more than once, then keep, delete, rename or move.")
         self.a_dupes.setShortcutContext(Qt.ApplicationShortcut)
@@ -237,11 +258,11 @@ class MainWindow(QMainWindow):
 
         mb = self.menuBar()
         m = mb.addMenu("&File")
-        for a in (self.a_connect, None, self.a_new, self.a_open, self.a_save, self.a_saveas, None,
+        for a in (self.a_connect, self.a_conn2, None, self.a_new, self.a_open, self.a_close, self.a_save, self.a_saveas, None,
                   self.a_export, self.a_list, self.a_xs, self.a_serve, None, self.a_quit):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("&Edit")
-        for a in (self.a_undo, self.a_redo, None, self.a_cat, self.a_catmgr, self.a_dupes, self.a_rules, self.a_epgid, self.a_logo, self.a_find,
+        for a in (self.a_undo, self.a_redo, None, self.a_cat, self.a_catmgr, self.a_names, self.a_dupes, self.a_carry, self.a_master, self.a_rules, self.a_epgid, self.a_logo, self.a_find,
                   None, self.a_fav, self.a_impfav, self.a_seen, None, self.a_del, self.a_restore):
             m.addSeparator() if a is None else m.addAction(a)
         mv = m.addMenu("Move")
@@ -429,9 +450,13 @@ class MainWindow(QMainWindow):
         kind, cat = self.kind, self.category
         pred = self._mode_pred(self.mode.currentData())
         tokens = self.search.text().lower().split()
+        self._sync_sources()
+        src = self.src_box.currentData() if self.lib.is_master else None
         rows = []
         for it in self.lib.items:
             if kind and it.kind != kind:
+                continue
+            if src is not None and it.src != src:
                 continue
             if cat and it.category not in cat:
                 continue
@@ -450,6 +475,37 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Scan your EPG sources first (EPG menu) so I know which IDs exist.", 8000)
         if rebuild_sidebar:
             self.refresh_sidebar()
+
+    def _sync_sources(self):
+        """Master lists get a Source column and a Source filter; ordinary projects don't."""
+        master = self.lib.is_master
+        self.model.sources = self.lib.sources
+        self.table.setColumnHidden(7, not master)
+        self.src_lbl.setVisible(master)
+        self.src_box.setVisible(master)
+        want = [s["label"] for s in self.lib.sources] if master else []
+        have = [self.src_box.itemText(i) for i in range(1, self.src_box.count())]
+        if want != have:
+            keep = self.src_box.currentData()
+            self.src_box.blockSignals(True)
+            self.src_box.clear()
+            if master:
+                self.src_box.addItem("All sources", None)
+                for n, lab in enumerate(want):
+                    self.src_box.addItem(lab, n)
+            k = self.src_box.findData(keep)
+            self.src_box.setCurrentIndex(max(k, 0))
+            self.src_box.blockSignals(False)
+
+    def _set_lib(self, lib):
+        """Swap in another project, and point any open tool windows at it."""
+        self.lib = lib
+        for name in ("_catmgr", "_carry", "_names", "_dupes", "_rules"):
+            dlg = getattr(self, name, None)
+            if dlg is not None:
+                dlg.lib = lib
+                if hasattr(dlg, "reload"):
+                    dlg.reload()
 
     def refresh_sidebar(self):
         pred = self._mode_pred(self.mode.currentData())
@@ -513,6 +569,12 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     # ---- sidebar context menu -----------------------------------------
+    def _cat_double_clicked(self, li):
+        """Double-click a category = Rename / merge (same as the right-click menu). 'All categories' does nothing."""
+        cat = li.data(Qt.UserRole)
+        if cat is not None:
+            self.rename_category({cat})
+
     def _cats_menu(self, pos):
         li = self.cats.itemAt(pos)
         if not li or li.data(Qt.UserRole) is None:
@@ -530,6 +592,9 @@ class MainWindow(QMainWindow):
                     lambda: self.rename_category(cats))
         m.addAction("Category manager...", self.category_manager)
         m.addAction("Sort A-Z...", self.sort_az)
+        m.addSeparator()
+        rx = m.addAction("Regex rules...", lambda: self.regex_rules(next(iter(cats))))
+        rx.setEnabled(len(cats) == 1)                 # the rule's category box holds one category
         m.exec(self.cats.viewport().mapToGlobal(pos))
 
     def _cat_items(self, cats):
@@ -584,6 +649,73 @@ class MainWindow(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
+    def copy_edits(self):
+        dlg = getattr(self, "_carry", None)
+        if dlg is None:
+            start = os.path.dirname(self.cfg.get("last_project") or "") or os.path.expanduser("~")
+            self._carry = dlg = CopyEditsDialog(self, self.lib, self.apply_carry_changes, self.cfg.get("carry_ask", True),
+                                                self._save_carry_ask, self.undo, start)
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        elif not dlg.isVisible():
+            dlg.reload()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def master_list(self):
+        dlg = getattr(self, "_master", None)
+        if dlg is None:
+            start = os.path.dirname(self.cfg.get("last_project") or "") or os.path.expanduser("~")
+            self._master = dlg = MasterListDialog(self, start, lambda: self.lib.path, self.open_master_file)
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        elif not dlg.isVisible():
+            dlg.reload()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_master_file(self, path):
+        if self._maybe_save():
+            self._load_project(path)
+
+    def _save_carry_ask(self, on):
+        self.cfg["carry_ask"] = bool(on)
+        cfg.save(self.cfg)
+
+    def apply_carry_changes(self, changes):
+        n = self.lib.change(changes, "copy edits")
+        self.category = set()
+        self.refresh()
+        self._after_change(f"Copied edits: {n:,} change{'s' if n != 1 else ''} applied.")
+
+    def name_manager(self):
+        dlg = getattr(self, "_names", None)
+        if dlg is None:
+            self._names = dlg = NameManagerDialog(
+                self, self.lib,
+                {"std_on": self.cfg.get("cat_std_on", True), "std": self.cfg.get("cat_std_list") or DEFAULT_STANDARD,
+                 "extra": self.cfg.get("cat_acronyms", "")},
+                self._save_acronyms, self.apply_name_changes, self.cfg.get("names_ask", True), self._save_names_ask,
+                self.undo, self.selected_items, lambda: self._cat_items(self._selected_cats()))
+            dlg.setModal(False)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        elif not dlg.isVisible():
+            dlg.reload()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _save_names_ask(self, on):
+        self.cfg["names_ask"] = bool(on)
+        cfg.save(self.cfg)
+
+    def apply_name_changes(self, changes):
+        n = self.lib.change(changes, "name manager")
+        self.refresh()
+        self._after_change(f"Name manager: {n:,} name{'s' if n != 1 else ''} changed.")
+
     def duplicate_finder(self):
         dlg = getattr(self, "_dupes", None)
         if dlg is None:
@@ -597,22 +729,30 @@ class MainWindow(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
-    def regex_rules(self):
+    def regex_rules(self, only_cat=None):
+        only_cat = only_cat if isinstance(only_cat, str) else None       # menu actions pass a bool
         dlg = getattr(self, "_rules", None)
         if dlg is None:
             self._rules = dlg = RegexRulesDialog(
                 self, self.lib, self.cfg.get("regex_rules", []), self._save_rules, self.apply_rule_changes,
-                self.cfg.get("rules_ask", True), self._save_rules_ask, self.undo)
+                self.cfg.get("rules_ask", True), self._save_rules_ask, self.undo,
+                self.cfg.get("builtin_rules", {}), self._save_builtin_rules)
             dlg.setModal(False)
             dlg.setAttribute(Qt.WA_DeleteOnClose, False)
         elif not dlg.isVisible():
             dlg.reload()
         dlg.show()
+        if only_cat:
+            dlg.only_in(only_cat)
         dlg.raise_()
         dlg.activateWindow()
 
     def _save_rules(self, rules):
         self.cfg["regex_rules"] = rules
+        cfg.save(self.cfg)
+
+    def _save_builtin_rules(self, states):
+        self.cfg["builtin_rules"] = dict(states)
         cfg.save(self.cfg)
 
     def _save_rules_ask(self, on):
@@ -893,6 +1033,10 @@ class MainWindow(QMainWindow):
     # server fetch
     # ====================================================================
     def connect_and_fetch(self):
+        if self.lib.is_master:
+            self.info("Master list", "This is a master list, so it isn't fetched from a provider. To change what's "
+                      "in it, use Edit > Build a master list, or open one of the source projects and fetch there.")
+            return
         conn = dict(self.lib.connection) if self.lib.connection else {
             k: self.cfg.get(k, "") for k in ("server", "username", "password", "ua")}
         dlg = ConnectDialog(self, conn)
@@ -931,6 +1075,36 @@ class MainWindow(QMainWindow):
 
         self.run_task("Fetching from server", job, done)
 
+    def second_login(self):
+        """Save a second provider account in this project (same list, used by a second server with --account 2)."""
+        if not self.lib.connection.get("server"):
+            self.info("Second login", "Fetch your list with the first login first (File > Connect), then add the second.")
+            return
+        dlg = ConnectDialog(
+            self, dict(self.lib.connection2), "Second login", "Save second login",
+            "A second account for the same provider. It's saved in this project and never changes your list: "
+            "a second local server (--account 2) uses it to stream, so each of your players has its own login.")
+        if not dlg.exec():
+            return
+        conn = dlg.values()
+
+        def job(progress, cancelled):
+            progress(-1, "Checking the login...")
+            return XtreamClient(**conn).authenticate()
+
+        def done(info):
+            self.lib.connection2 = conn
+            self.lib.dirty = True
+            self._after_change("Second login saved. Press Ctrl+S to save the project.")
+            ui = (info or {}).get("user_info", {}) if isinstance(info, dict) else {}
+            bits = [f"status: {ui['status']}"] if ui.get("status") else []
+            if ui.get("max_connections"):
+                bits.append(f"max connections: {ui['max_connections']}")
+            self.info("Second login saved", "It works." + (" Account - " + ", ".join(bits) if bits else "")
+                      + "\n\nSave the project (Ctrl+S), then start a second server with --account 2.")
+
+        self.run_task("Checking second login", job, done)
+
     # ====================================================================
     # projects
     # ====================================================================
@@ -954,12 +1128,30 @@ class MainWindow(QMainWindow):
         if not self._maybe_save():
             return
         conn = self.lib.connection
-        self.lib = Library()
+        self._set_lib(Library())
         self.lib.connection = conn
         self.epg_index = None
         self.category = set()
         self.refresh()
         self._after_change("New project. Use File > Connect to fetch.")
+
+    def close_project(self):
+        if not self._maybe_save():
+            return
+        if self.xs.running:
+            r = QMessageBox.question(self, "Server running", "The local Xtream server is serving this project. "
+                                     "Stop it and close the project?")
+            if r != QMessageBox.Yes:
+                return
+            self.xs.stop()
+            self.serve_lbl.setText("")
+        self._set_lib(Library())
+        self.epg_index = None
+        self.category = set()
+        self.cfg["last_project"] = ""
+        cfg.save(self.cfg)
+        self.refresh()
+        self._after_change("Project closed. Use File > Open or File > Connect to start again.")
 
     def open_project(self):
         if not self._maybe_save():
@@ -978,7 +1170,7 @@ class MainWindow(QMainWindow):
             return lib
 
         def done(lib):
-            self.lib = lib
+            self._set_lib(lib)
             self.epg_index = None
             self.category = set()
             self.cfg["last_project"] = path
@@ -1021,14 +1213,16 @@ class MainWindow(QMainWindow):
     # ====================================================================
     def _epg_sources(self):
         out = []
-        if self.lib.use_provider_epg and self.lib.connection.get("server"):
-            out.append(("Provider guide", xmltv_url(self.lib.connection)))
+        if self.lib.use_provider_epg:
+            logins = self.lib.logins()
+            for n, c in enumerate(logins, 1):
+                out.append(("Provider guide" + (f" {n}" if len(logins) > 1 else ""), xmltv_url(c)))
         for u in self.lib.epg_sources:
             out.append((epg.label_for(u), u))
         return out
 
     def _ua(self):
-        return self.lib.connection.get("ua") or DEFAULT_UA
+        return (self.lib.logins() or [{}])[0].get("ua") or DEFAULT_UA
 
     def epg_sources_dialog(self):
         dlg = EpgSourcesDialog(self, self.lib.epg_sources, self.lib.use_provider_epg)
@@ -1237,9 +1431,9 @@ class MainWindow(QMainWindow):
         def job(progress, cancelled):
             header, epg_stats = "", None
             lo = 0
-            if v["epg_mode"] == "provider":
+            if v["epg_mode"] == "provider" and not lib.is_master:
                 header = xmltv_url(conn)
-            elif v["epg_mode"] == "merge":
+            elif v["epg_mode"] in ("merge", "provider"):
                 wanted = {i.epg_id for i in lib.items if i.kind == "live" and i.epg_id
                           and not i.deleted and not i.gone} if "live" in v["kinds"] else set()
                 fname = "epg.xml.gz" if v["gz"] else "epg.xml"
@@ -1312,7 +1506,7 @@ class MainWindow(QMainWindow):
         def start(st):
             if not self.lib.items:
                 return "Fetch or open a list first."
-            if not self.lib.connection.get("server"):
+            if not self.lib.logins():
                 return "This project has no provider login yet. Use File > Connect first."
             try:
                 self.xs.start(self.lib, st["xs_port"], st["xs_user"], st["xs_pass"], st["xs_mode"],

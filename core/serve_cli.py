@@ -59,29 +59,50 @@ def run(args):
         return 2
     lib = Library()
     lib.load(project)
-    if not lib.connection.get("server"):
+    account = 2 if getattr(args, "account", 1) == 2 else 1
+    if lib.is_master:
+        account = 1
+        if not lib.logins():
+            print("That master list has no provider logins saved in it.")
+            return 2
+        print("Master list: every channel plays from the provider it came from. It isn't re-synced from a\n"
+              "provider (rebuild it in the editor with Edit > Build a master list).\n")
+        args.refresh = False
+        args.no_auto_refresh = True
+    elif account == 2:
+        if not lib.connection2.get("server"):
+            print("That project has no second login saved. In the app use File > Second login first.")
+            return 2
+    elif not lib.connection.get("server"):
         print("That project has no provider login saved. Fetch from the server in the app first.")
         return 2
 
     fresh_items = None
-    if args.refresh:
+    if account == 2 and args.refresh:
+        print("Skipping --refresh: the first server keeps the project file up to date.")
+    elif args.refresh:
         print("Refreshing from the provider (your edits are kept)...")
         res = fetch_all(XtreamClient(**lib.connection), lambda p, m="": None)
         fresh_items = res["items"]
         print("  ", lib.merge_server(fresh_items))
 
     # command line wins, then saved settings
-    port = args.port or int(s.get("xs_port", 8090))
-    user = args.user or s.get("xs_user") or "local"
-    password = args.password or s.get("xs_pass")
+    second = account == 2                              # the second server gets its own port, user name and password
+    port = args.port or int(s.get("xs_port", 8090)) + (1 if second else 0)
+    user = args.user or ((s.get("xs_user") or "local") + ("2" if second else ""))
+    pass_key = "xs_pass2" if second else "xs_pass"
+    password = args.password or s.get(pass_key)
     if not password:
         password = cfg.make_password()
-        s["xs_pass"] = password
+        s[pass_key] = password
         cfg.save(s)
     mode = "proxy" if args.proxy else s.get("xs_mode", "redirect")
     epg_mode = "none" if args.no_epg else s.get("xs_epg", "merged")
 
-    refresh_at = None if args.no_auto_refresh else (args.refresh_at or s.get("xs_refresh_at", "03:00"))
+    refresh_at = None if (args.no_auto_refresh or second) else (args.refresh_at or s.get("xs_refresh_at", "03:00"))
+    if second:
+        print("Second login: this server streams with your second account. It doesn't re-sync the list itself;\n"
+              "the first server does that and this one picks the changes up from the project file.\n")
     if refresh_at:
         try:
             parse_hhmm(refresh_at)
@@ -93,7 +114,7 @@ def run(args):
     srv.echo = print
     try:
         srv.start(lib, port, user, password, mode, epg_mode, int(s.get("xs_epg_hours", 12)),
-                  placeholders=bool(args.placeholder_epg or s.get("xs_placeholders", False)))
+                  placeholders=bool(args.placeholder_epg or s.get("xs_placeholders", False)), account=account)
     except OSError as e:
         print(f"Couldn't start on port {port}: {e}\nTry another port with --port.")
         return 1
@@ -108,7 +129,7 @@ def run(args):
         next_at = time.time() + args.first_refresh_in if args.first_refresh_in else next_run(time.time(), refresh_at)
         print(f"  Re-syncing with your provider every day at {refresh_at} (this PC's clock); next: "
               f"{time.strftime('%a %H:%M', time.localtime(next_at))}.")
-    print("  Leave this window open (minimizing is also fine). Ctrl+C to stop.\n")
+    print("  Leave this window open. Ctrl+C to stop.\n")
 
     def stamp():
         try:
@@ -145,7 +166,7 @@ def run(args):
             try:
                 new = Library()
                 new.load(project)
-                if not new.connection.get("server"):
+                if not (new.logins() if new.is_master else (new.connection2 if second else new.connection).get("server")):
                     raise ValueError("no provider login in the file")
                 if fresh_items is not None:        # keep the startup --refresh results
                     new.merge_server(fresh_items)

@@ -23,17 +23,17 @@ def _extinf(tvg_id, name, logo, group):
 
 
 def _entries(lib, kind, live_ext, prefix, stats, placeholders=False):
-    conn = lib.connection
     for it in lib.ordered(kind):
+        conn = lib.conn_for(it)
         if it.deleted or it.gone:
             continue
         group = prefix + it.category
         if kind == "live":
             stats["live"] += 1
-            yield _extinf(placeholder.guide_id(it, placeholders), it.name, it.logo, group), stream_url(conn, "live", it.id, live_ext)
+            yield _extinf(placeholder.guide_id(it, placeholders), it.name, it.logo, group), stream_url(conn, "live", it.sid, live_ext)
         elif kind == "vod":
             stats["vod"] += 1
-            yield _extinf("", it.name, it.logo, group), stream_url(conn, "vod", it.id, it.ext)
+            yield _extinf("", it.name, it.logo, group), stream_url(conn, "vod", it.sid, it.ext)
         else:
             if not it.episodes:
                 stats["series_no_eps"] += 1

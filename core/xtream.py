@@ -107,10 +107,10 @@ class XtreamClient:
         params.update(extra)
         url = f"{self.server}/player_api.php"
         last = None
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 r = self.session.get(url, params=params, timeout=self.timeout)
-            except (requests.ConnectionError, requests.Timeout) as e:
+            except requests.RequestException as e:      # dropped connection, cut-off download, timeout...
                 last = e
                 time.sleep(1.5 * (attempt + 1))
                 continue
@@ -118,7 +118,7 @@ class XtreamClient:
                 raise XtreamError(
                     f"Server refused the request (HTTP {r.status_code}). "
                     "Check the login, or try a different User-Agent.")
-            if r.status_code >= 500 and attempt < 2:
+            if r.status_code >= 500 and attempt < 3:
                 last = XtreamError(f"HTTP {r.status_code}")
                 time.sleep(1.5 * (attempt + 1))
                 continue
@@ -130,7 +130,12 @@ class XtreamClient:
                 raise XtreamError(
                     "Server didn't return JSON. The URL may be wrong, or the provider "
                     "blocks this client.")
-        raise XtreamError(f"Could not reach the server: {last}")
+        raise XtreamError(
+            "The connection to the server kept dropping, so the list couldn't be downloaded "
+            f"(tried {attempt + 1} times). The provider may be busy, or the account may already be in use on "
+            f"another player (one connection per account). Try again in a few minutes.\nDetails: {last}"
+            if isinstance(last, (requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError))
+            else f"Could not reach the server: {last}")
 
     def authenticate(self):
         data = self._api()

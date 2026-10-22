@@ -217,7 +217,7 @@ try:
 
     # --- guide: merged file built in the background
     t0 = time.time()
-    while not os.path.exists(os.path.join(TMP, ".xtream_editor", "xtream_server", "epg.xml.gz")) and time.time() - t0 < 30:
+    while not os.path.exists(os.path.join(TMP, ".xtream_editor", "xtream_server", f"epg-{LOCAL}.xml.gz")) and time.time() - t0 < 30:
         time.sleep(0.2)
     time.sleep(0.5)
     check("guide ready" in srv.epg_status(), f"guide built ({srv.epg_status()})")
@@ -249,11 +249,11 @@ try:
         time.sleep(0.5)
         try:
             import gzip as _gz
-            got_local = b'id="extra-1"' in _gz.open(os.path.join(TMP, ".xtream_editor", "xtream_server", "epg.xml.gz")).read()
+            got_local = b'id="extra-1"' in _gz.open(os.path.join(TMP, ".xtream_editor", "xtream_server", f"epg-{LOCAL}.xml.gz")).read()
         except OSError:
             pass
     check(got_local, "server guide includes a channel that only exists in a local guide file")
-    meta_path = os.path.join(TMP, ".xtream_editor", "xtream_server", "epg.meta.json")
+    meta_path = os.path.join(TMP, ".xtream_editor", "xtream_server", f"epg-{LOCAL}.meta.json")
     meta_before = json.load(open(meta_path))
     open(lf, "a").write("\n")
     from core.xtream_server import EpgKeeper
@@ -448,6 +448,80 @@ try:
     cli3 = subprocess.Popen([sys.executable, os.path.join(ROOT, "main.py"), "--serve", rp, "--port", str(LOCAL + 3),
                              "--no-epg", "--refresh-at", "99:99"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     check("Bad --refresh-at" in cli3.communicate(timeout=15)[0], "bad --refresh-at is reported")
+
+    # --- second login: one project, two servers
+    check(srv.epg_file.name == f"epg-{LOCAL}.xml.gz" and srv.epg_file.exists(), "each server keeps its own guide file, named after its port")
+    l2.connection2 = dict(c2, username="second", password="pw2")
+    proj2 = os.path.join(TMP, "two.xtp")
+    l2.save(proj2)
+    back = Library()
+    back.load(proj2)
+    check(back.connection2["username"] == "second" and back.connection["username"] == c2["username"], "the project file keeps both logins")
+    from core.xtream_server import Snapshot as _Snap
+    check(_Snap(back, account=2).conn["username"] == "second" and _Snap(back).conn["username"] == c2["username"],
+          "a server on account 2 streams with the second login")
+    miss = subprocess.Popen([sys.executable, os.path.join(ROOT, "main.py"), "--serve", proj, "--account", "2", "--no-epg"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    check("no second login" in miss.communicate(timeout=15)[0] and miss.returncode == 2, "--account 2 without a second login says so")
+    cli4 = subprocess.Popen([sys.executable, os.path.join(ROOT, "main.py"), "--serve", proj2, "--account", "2",
+                             "--port", str(LOCAL + 5), "--user", "rec", "--password", "pw", "--no-epg"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(3)
+    r = requests.get(f"http://127.0.0.1:{LOCAL + 5}/player_api.php",
+                     params={"username": "rec", "password": "pw", "action": "get_live_streams"}, timeout=10)
+    sid = r.json()[0]["stream_id"]
+    loc = requests.get(f"http://127.0.0.1:{LOCAL + 5}/live/rec/pw/{sid}.ts", allow_redirects=False).headers.get("Location", "")
+    cli4.terminate()
+    out4 = cli4.communicate(timeout=10)[0]
+    check(r.status_code == 200 and len(r.json()) == len([i for i in back.items if i.kind == "live" and not i.deleted]), "the account-2 server serves the same list")
+    check("/second/pw2/" in loc, f"and sends its player to the provider with the second login ({loc})")
+    check("doesn't re-sync the list itself" in out4 and "Re-syncing with your provider every day" not in out4,
+          "the account-2 server leaves the daily re-sync to the first one")
+    # --- master list: each channel plays from its own provider
+    from core import master as _M
+    from core.models import Item as _Item
+    pa = Library()
+    pa.connection = {"server": "http://prov-a.test:80", "username": "ua", "password": "pa", "ua": "t"}
+    pb = Library()
+    pb.connection = {"server": "http://prov-b.test:80", "username": "ub", "password": "pb", "ua": "t"}
+    pa.items = [_Item("live", "101", "ESPN", "Sports", epg_id="espn.us", num=0), _Item("live", "102", "CNN", "News", num=1)]
+    pb.items = [_Item("live", "101", "Fox Sports", "Sports", num=0), _Item("live", "205", "BBC One", "UK", num=1)]
+    ms = Library()
+    ia, ib = _M.add_source(ms, pa.connection, "ListA"), _M.add_source(ms, pb.connection, "ListB")
+    _M.add_items(ms, ia, pa.items)
+    _M.add_items(ms, ib, pb.items)
+    mproj = os.path.join(TMP, "master.xtp")
+    ms.save(mproj)
+    mback = Library()
+    mback.load(mproj)
+    check(mback.is_master and len(mback.sources) == 2 and len({i.id for i in mback.items}) == 4,
+          "a master list keeps its sources, and ids from two providers don't clash")
+    cli5 = subprocess.Popen([sys.executable, os.path.join(ROOT, "main.py"), "--serve", mproj,
+                             "--port", str(LOCAL + 6), "--user", "m", "--password", "pw", "--no-epg"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(3)
+    try:
+        rr = requests.get(f"http://127.0.0.1:{LOCAL + 6}/player_api.php",
+                          params={"username": "m", "password": "pw", "action": "get_live_streams"}, timeout=10).json()
+        ids = {e["name"]: e["stream_id"] for e in rr}
+        locs = {n: requests.get(f"http://127.0.0.1:{LOCAL + 6}/live/m/pw/{s}.ts", allow_redirects=False).headers.get("Location", "")
+                for n, s in ids.items()}
+        check(len(rr) == 4 and len(set(ids.values())) == 4, "the master serves all four channels with distinct ids")
+        check(locs["ESPN"] == "http://prov-a.test:80/live/ua/pa/101.ts" and locs["Fox Sports"] == "http://prov-b.test:80/live/ub/pb/101.ts"
+              and locs["BBC One"].endswith("/live/ub/pb/205.ts"),
+              f"each channel is sent to its own provider with its own id ({locs})")
+    finally:
+        cli5.terminate()
+        out5 = cli5.communicate(timeout=10)[0]
+    check("Master list" in out5 and "Re-syncing with your provider every day" not in out5, "a master is never re-synced from a provider")
+    from core.xtream_server import Snapshot as _Snap2
+    check([n for n, _ in _Snap2(mback).epg_sources()] == ["Provider guide 1", "Provider guide 2"],
+          "the guide is read from every provider in the master")
+    from core import exporter as _EX
+    ex = list(_EX._entries(mback, "live", "ts", "", {"live": 0}))
+    check(sorted(u for _, u in ex) == sorted(["http://prov-a.test:80/live/ua/pa/101.ts", "http://prov-a.test:80/live/ua/pa/102.ts",
+                                              "http://prov-b.test:80/live/ub/pb/101.ts", "http://prov-b.test:80/live/ub/pb/205.ts"]),
+          "an M3U export of a master has each channel's own provider address")
 finally:
     prov2.terminate()
 

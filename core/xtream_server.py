@@ -31,8 +31,7 @@ from .models import KINDS
 from .xtream import DEFAULT_UA, XtreamClient, stream_url, timeshift_php_url, timeshift_url, xmltv_url
 
 SERVER_DIR = APP_DIR / "xtream_server"
-EPG_FILE = SERVER_DIR / "epg.xml.gz"
-EPG_META = SERVER_DIR / "epg.meta.json"
+# each server keeps its own guide and log files (named after its port), so two servers on one PC never collide
 STREAM_RE = re.compile(r"^/(live|movie|series)/([^/]+)/([^/]+)/([^/.]+)(?:\.(\w+))?$")
 TIMESHIFT_RE = re.compile(r"^/timeshift/([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^/.]+)(?:\.(\w+))?$")
 
@@ -108,10 +107,12 @@ def _entry(kind, it, n, cid, epg=None):
 
 
 class Snapshot:
-    def __init__(self, lib, placeholders=False):
+    def __init__(self, lib, placeholders=False, account=1):
         self.placeholders = placeholders
         self.fill = {}                 # {guide id: channel name} for placeholder guide entries (when on)
-        self.conn = dict(lib.connection)
+        self.conn = dict(lib.connection2 if account == 2 else lib.connection)
+        self.logins = lib.logins()          # every provider this list draws on (a master list has several)
+        self.route = {}                     # master lists: {(kind, id): (login, the provider's own id)}
         self.use_provider_epg = lib.use_provider_epg
         self.extra_epg = list(lib.epg_sources)
         self.cats, self.rows, self.meta = {}, {}, {}
@@ -131,6 +132,8 @@ class Snapshot:
                 cid = str(ids[it.category])
                 gid = placeholder.guide_id(it, placeholders) if kind == "live" else it.epg_id
                 rows.append((cid, _entry(kind, it, n, cid, gid)))
+                if lib.is_master:
+                    self.route[(kind, it.id)] = (lib.conn_for(it), it.sid)
                 if kind == "live" and placeholders:
                     self.fill.setdefault(gid, it.name)
                 m = {"name": it.name, "cid": cid, "logo": it.logo, "epg": gid, "ext": it.ext,
@@ -152,6 +155,10 @@ class Snapshot:
     def counts(self):
         return {k: len(self.rows[k]) for k in KINDS}
 
+    def target(self, kind, sid):
+        """(provider login, the provider's own id) for a channel id as players see it."""
+        return self.route.get((kind, str(sid)), (self.conn, sid))
+
     def payload(self, what, kind, cid=None):
         """(raw_json, gzipped_json) for a category list or stream list, cached."""
         key = (what, kind, cid)
@@ -171,8 +178,12 @@ class Snapshot:
 
     def epg_sources(self):
         out = []
-        if self.use_provider_epg and self.conn.get("server"):
-            out.append(("Provider guide", xmltv_url(self.conn)))
+        if self.use_provider_epg:
+            if self.route:
+                for n, c in enumerate(self.logins, 1):
+                    out.append((f"Provider guide {n}", xmltv_url(c)))
+            elif self.conn.get("server"):
+                out.append(("Provider guide", xmltv_url(self.conn)))
         for u in self.extra_epg:
             out.append((epg.label_for(u), u))
         return out
@@ -267,7 +278,7 @@ class EpgKeeper(threading.Thread):
 
     def _meta(self):
         try:
-            return json.loads(EPG_META.read_text())
+            return json.loads(self.owner.epg_meta.read_text())
         except (OSError, ValueError):
             return {}
 
@@ -279,7 +290,7 @@ class EpgKeeper(threading.Thread):
                 "ph": bool(snap.placeholders)}
 
     def _due(self, snap, force):
-        if force or not EPG_FILE.exists():
+        if force or not self.owner.epg_file.exists():
             return True
         meta = self._meta()
         age = time.time() - meta.get("ts", 0)
@@ -314,13 +325,13 @@ class EpgKeeper(threading.Thread):
             return failed or 1
         self.status = "merging guides..."
         SERVER_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = str(EPG_FILE) + ".tmp"
+        tmp = str(self.owner.epg_file) + ".tmp"
         stats = epg.merge_xmltv(usable, snap.wanted_epg, tmp, self.owner.ua, gz=True, fill=snap.fill)
-        os.replace(tmp, EPG_FILE)
+        os.replace(tmp, self.owner.epg_file)
         meta = self._sig(snap)
         meta.update(ts=time.time(), **stats)
-        EPG_META.write_text(json.dumps(meta))
-        self.owner.local_epg = LocalEpg(str(EPG_FILE))
+        self.owner.epg_meta.write_text(json.dumps(meta))
+        self.owner.local_epg = LocalEpg(str(self.owner.epg_file))
         extra = f", plus {stats['placeholders']:,} placeholders" if stats.get("placeholders") else ""
         self.status = (f"guide ready: {stats['channels']:,} channels{extra}, {stats['programs']:,} programs "
                        f"(updated {time.strftime('%H:%M')})")
@@ -456,12 +467,13 @@ class _Handler(BaseHTTPRequestHandler):
             user, pw, dur, start, sid, ext = t.groups()
             if not srv.auth(user, pw):
                 return self._send(403, b"forbidden", "text/plain")
-            return self._play(timeshift_url(srv.snap.conn, unfav(sid), dur, start, ext or "ts"))
+            conn, real = srv.snap.target("live", unfav(sid))
+            return self._play(timeshift_url(conn, real, dur, start, ext or "ts"), conn)
         if path == "/streaming/timeshift.php":          # catch-up, php style
             if not srv.auth(q.get("username"), q.get("password")):
                 return self._send(403, b"forbidden", "text/plain")
-            return self._play(timeshift_php_url(srv.snap.conn, unfav(q.get("stream", "")), q.get("duration", ""),
-                                                q.get("start", "")))
+            conn, real = srv.snap.target("live", unfav(q.get("stream", "")))
+            return self._play(timeshift_php_url(conn, real, q.get("duration", ""), q.get("start", "")), conn)
         if path in ("/player_api.php", "/panel_api.php"):
             if not srv.auth(q.get("username"), q.get("password")):
                 return self._json({"user_info": {"auth": 0}, "server_info": {}})
@@ -504,13 +516,13 @@ class _Handler(BaseHTTPRequestHandler):
         srv = self.srv
         if srv.epg_mode == "provider":
             self.send_response(302)
-            self.send_header("Location", xmltv_url(srv.snap.conn))
+            self.send_header("Location", xmltv_url((srv.snap.logins or [srv.snap.conn])[0]))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        if srv.epg_mode == "none" or not EPG_FILE.exists():
+        if srv.epg_mode == "none" or not srv.epg_file.exists():
             return self._send(200, b'<?xml version="1.0" encoding="UTF-8"?><tv></tv>', "application/xml")
-        size = EPG_FILE.stat().st_size
+        size = srv.epg_file.stat().st_size
         gz_ok = "gzip" in self.headers.get("Accept-Encoding", "")
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
@@ -520,7 +532,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command == "HEAD":
             return
-        with open(EPG_FILE, "rb") as raw:
+        with open(srv.epg_file, "rb") as raw:
             f = raw if gz_ok else gzip.GzipFile(fileobj=raw)
             while True:
                 chunk = f.read(1 << 16)
@@ -545,11 +557,10 @@ class _Handler(BaseHTTPRequestHandler):
     # -- playback ----------------------------------------------------
     def _stream(self, kind, sid, ext):
         kind = "vod" if kind == "movie" else kind               # URL says "movie", the library says "vod"
-        conn = self.srv.snap.conn
-        self._play(stream_url(conn, kind, sid, ext or ""))
+        conn, real = self.srv.snap.target(kind, sid)
+        self._play(stream_url(conn, kind, real, ext or ""), conn)
 
-    def _play(self, url):
-        conn = self.srv.snap.conn
+    def _play(self, url, conn):
         if self.srv.stream_mode == "proxy":
             return self._proxy(url, conn.get("ua") or DEFAULT_UA)
         self.send_response(302)
@@ -597,6 +608,9 @@ class XtreamServer:
         self.stream_mode = "redirect"
         self.epg_mode = "merged"
         self.placeholders = False
+        self.account = 1
+        self.epg_file = SERVER_DIR / "epg.xml.gz"
+        self.epg_meta = SERVER_DIR / "epg.meta.json"
         self.ua = DEFAULT_UA
         self.lines = collections.deque(maxlen=400)
         self.echo = None                      # optional callable(str), e.g. print for the CLI
@@ -610,22 +624,30 @@ class XtreamServer:
 
     # -- lifecycle -----------------------------------------------------
     def start(self, lib, port, user, password, stream_mode="redirect", epg_mode="merged",
-              epg_hours=12, host="0.0.0.0", placeholders=False):
+              epg_hours=12, host="0.0.0.0", placeholders=False, account=1):
         self.stop()
-        if not lib.connection.get("server"):
-            raise ValueError("No provider login in this project yet. Fetch from the server first.")
+        self.account = 2 if account == 2 else 1
+        login = lib.connection2 if self.account == 2 else lib.connection
+        if lib.is_master:
+            login = (lib.logins() or [{}])[0]
+        if not login.get("server"):
+            raise ValueError("No second login in this project yet. Add it in the editor (File > Second login)."
+                             if self.account == 2 else
+                             "No provider login in this project yet. Fetch from the server first.")
         self.user, self.password = user, password
         self.stream_mode, self.epg_mode = stream_mode, epg_mode
-        self.ua = lib.connection.get("ua") or DEFAULT_UA
+        self.ua = login.get("ua") or DEFAULT_UA
         self.placeholders = bool(placeholders) and epg_mode == "merged"
-        self.snap = Snapshot(lib, self.placeholders)
-        self._init_logger()
+        self.snap = Snapshot(lib, self.placeholders, self.account)
+        self._init_logger(port)
         self.httpd = _HTTPD((host, int(port)), _Handler)
         self.httpd.owner = self
         self.port = self.httpd.server_address[1]
+        self.epg_file = SERVER_DIR / f"epg-{self.port}.xml.gz"
+        self.epg_meta = SERVER_DIR / f"epg-{self.port}.meta.json"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
-        self.local_epg = LocalEpg(str(EPG_FILE)) if epg_mode == "merged" else None
+        self.local_epg = LocalEpg(str(self.epg_file)) if epg_mode == "merged" else None
         if epg_mode == "merged":
             self.keeper = EpgKeeper(self, epg_hours)
             self.keeper.start()
@@ -638,7 +660,7 @@ class XtreamServer:
         if not self.running:
             return 0.0
         t = time.time()
-        self.snap = Snapshot(lib, self.placeholders)
+        self.snap = Snapshot(lib, self.placeholders, self.account)
         with self._plock:
             self._pcache.clear()
         return time.time() - t
@@ -656,14 +678,15 @@ class XtreamServer:
         self.httpd = self.thread = self.keeper = None
 
     # -- helpers -------------------------------------------------------
-    def _init_logger(self):
-        if self._logger:
+    def _init_logger(self, port=0):
+        name = f"xtream_server.{port}"
+        if self._logger and self._logger.name == name:
             return
         SERVER_DIR.mkdir(parents=True, exist_ok=True)
-        lg = logging.getLogger("xtream_server")
+        lg = logging.getLogger(name)
         lg.setLevel(logging.INFO)
         if not lg.handlers:
-            h = logging.handlers.RotatingFileHandler(SERVER_DIR / "server.log", maxBytes=1_000_000,
+            h = logging.handlers.RotatingFileHandler(SERVER_DIR / f"server-{port}.log", maxBytes=1_000_000,
                                                      backupCount=2, encoding="utf-8")
             h.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
             lg.addHandler(h)
@@ -715,8 +738,9 @@ class XtreamServer:
             self._local.key = key
         return self._local.client
 
-    def provider_json(self, snap, action, ttl=0, **params):
-        key = (action, tuple(sorted(params.items())))
+    def provider_json(self, snap, action, ttl=0, conn=None, **params):
+        conn = conn or snap.conn
+        key = (conn.get("server"), conn.get("username"), action, tuple(sorted(params.items())))
         now = time.time()
         if ttl:
             with self._plock:
@@ -724,7 +748,7 @@ class XtreamServer:
             if hit and now - hit[0] < ttl:
                 return hit[1]
         try:
-            data = self._client(snap.conn)._api(action, **params)
+            data = self._client(conn)._api(action, **params)
         except Exception as e:                                  # noqa: BLE001
             self.log(f"provider call {action} failed: {e}")
             return None
@@ -784,7 +808,8 @@ class XtreamServer:
         """The provider's own day listing (it marks which past shows can still be watched via catch-up);
         falls back to the local guide's upcoming shows if the provider can't be reached."""
         if sid in snap.meta["live"]:
-            data = self.provider_json(snap, "get_simple_data_table", ttl=300, stream_id=sid)
+            conn, real = snap.target("live", sid)
+            data = self.provider_json(snap, "get_simple_data_table", ttl=300, conn=conn, stream_id=real)
             if isinstance(data, dict) and data.get("epg_listings"):
                 return data
         return self.short_epg(snap, sid, 20)
@@ -797,7 +822,8 @@ class XtreamServer:
             got = self.local_epg.listings(m["epg"], limit)
             if got:
                 return {"epg_listings": got}
-        data = self.provider_json(snap, "get_short_epg", stream_id=sid, limit=limit)
+        conn, real = snap.target("live", sid)
+        data = self.provider_json(snap, "get_short_epg", conn=conn, stream_id=real, limit=limit)
         if isinstance(data, dict) and data.get("epg_listings"):
             return data
         return {"epg_listings": []}

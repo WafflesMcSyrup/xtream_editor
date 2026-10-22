@@ -27,7 +27,7 @@ class Item:
     __slots__ = (
         "kind", "id", "name", "category", "category_id", "logo", "epg_id",
         "ext", "num", "added", "rating", "plot", "arch",
-        "deleted", "gone", "fav", "new", "edits", "episodes",
+        "deleted", "gone", "fav", "new", "edits", "episodes", "src", "orig",
     )
 
     def __init__(self, kind, id, name="", category="Uncategorized", category_id="",
@@ -51,6 +51,13 @@ class Item:
         self.gone = False         # no longer on the server after a re-sync
         self.edits = set()        # which fields the user changed (kept on re-sync)
         self.episodes = None      # series only: list of dicts once fetched
+        self.src = -1             # master lists: which provider (index into Library.sources); -1 = the project's own login
+        self.orig = ""            # master lists: the channel's id at that provider (this item's id is the master's own)
+
+    @property
+    def sid(self):
+        """The id to ask the provider for."""
+        return self.orig or self.id
 
     @property
     def key(self):
@@ -78,6 +85,9 @@ class Item:
             d["ed"] = sorted(self.edits)
         if self.episodes is not None:
             d["eps"] = self.episodes
+        if self.src >= 0:
+            d["s"] = self.src
+            d["oi"] = self.orig
         return d
 
     @classmethod
@@ -94,6 +104,8 @@ class Item:
         it.arch = int(d.get("ar", 0) or 0)
         it.edits = set(d.get("ed", ()))
         it.episodes = d.get("eps")
+        it.src = int(d.get("s", -1))
+        it.orig = d.get("oi", "")
         return it
 
 
@@ -102,12 +114,31 @@ class Library:
         self.items = []
         self.index = {}
         self.connection = {}
+        self.connection2 = {}        # optional second provider login (same list, second account)
+        self.sources = []            # master lists: [{"label": ..., "conn": {...}}], one per provider the channels come from
         self.epg_sources = []        # extra XMLTV URLs (one string each)
         self.use_provider_epg = True
         self.undo_stack = []
         self.redo_stack = []
         self.dirty = False
         self.path = None
+
+    # ---- master lists -------------------------------------------------
+    @property
+    def is_master(self):
+        return bool(self.sources)
+
+    def conn_for(self, item):
+        """The provider login that serves this item."""
+        if 0 <= item.src < len(self.sources):
+            return self.sources[item.src]["conn"]
+        return self.connection
+
+    def logins(self):
+        """Every provider login this project uses (for guides)."""
+        if self.is_master:
+            return [s["conn"] for s in self.sources if s["conn"].get("server")]
+        return [self.connection] if self.connection.get("server") else []
 
     # ---- basics -------------------------------------------------------
     def clear(self):
@@ -205,6 +236,8 @@ class Library:
     # ---- re-sync with server -----------------------------------------
     def merge_server(self, fresh):
         """Fold freshly fetched items in. User edits survive; vanished items get flagged."""
+        if self.is_master:
+            raise RuntimeError("A master list is built from other lists, so it can't be fetched from a provider.")
         fresh_map = {it.key: it for it in fresh}
         first_load = not self.items
         newly_gone = 0
@@ -254,6 +287,8 @@ class Library:
             "version": PROJECT_VERSION,
             "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
             "connection": self.connection,
+            "connection2": self.connection2,
+            "sources": self.sources,
             "epg_sources": self.epg_sources,
             "use_provider_epg": self.use_provider_epg,
             "items": [it.to_dict() for it in self.items],
@@ -273,6 +308,8 @@ class Library:
             data = json.load(f)
         self.clear()
         self.connection = data.get("connection", {})
+        self.connection2 = data.get("connection2", {})
+        self.sources = data.get("sources", [])
         self.epg_sources = data.get("epg_sources", [])
         self.use_provider_epg = data.get("use_provider_epg", True)
         self.items = [Item.from_dict(d) for d in data.get("items", [])]

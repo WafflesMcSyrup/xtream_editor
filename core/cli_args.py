@@ -10,6 +10,10 @@ def parse_args(argv=None):
     ap.add_argument("--port", type=int, help="server port (default: saved setting, 8090)")
     ap.add_argument("--user", help="username your IPTV apps will use")
     ap.add_argument("--password", help="password your IPTV apps will use")
+    ap.add_argument("--account", type=int, choices=(1, 2), default=1,
+                    help="which provider login in the project to stream with (2 = the second login saved under "
+                         "File > Second login). Defaults for 2: next port up, user name + '2', its own password; "
+                         "it leaves the daily re-sync to the first server")
     ap.add_argument("--proxy", action="store_true",
                     help="relay streams through this PC instead of sending apps straight to the provider")
     ap.add_argument("--no-epg", action="store_true", help="don't serve a guide")

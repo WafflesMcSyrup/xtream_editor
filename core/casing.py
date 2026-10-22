@@ -11,7 +11,7 @@ STRUCTURAL = {"uk", "usa", "us", "uae", "eu", "hd", "fhd", "uhd", "sd", "hdr", "
 # Default "standard" list of channel / league acronyms; the user can edit it in the Category manager.
 DEFAULT_STANDARD = ("ESPN, ABC, CBS, NBC, FOX, BBC, BBCI, AMC, AMC+, MGM, MGM+, AFL, NFL, MLB, NBA, WNBA, NCAA, "
                     "HBO, FX, PPV, HVEC, HEVC, GP, BTN, FIFA, FLO, MILB, MLS, NCAAB, NCAAF, NFHS, NHL, PBS")
-COUNTRY_CODES = {"ca", "au", "nz", "ie", "de", "fr", "es", "it", "pt", "nl", "be", "ch", "at", "se", "no", "dk",
+COUNTRY_CODES = {"en", "ca", "au", "nz", "ie", "de", "fr", "es", "it", "pt", "nl", "be", "ch", "at", "se", "no", "dk",
                  "fi", "pl", "ru", "tr", "gr", "mx", "br", "ar", "in", "pk", "za", "ae", "sa", "qa", "kw", "il",
                  "jp", "kr", "cn", "hk", "tw", "sg", "my", "th", "ph", "id", "vn"}
 # two-letter country codes only count as acronyms right in front of a separator ("DE | Sport")
@@ -30,6 +30,8 @@ def _word(tok, first, extra, before_sep):
         return tok.upper()
     if before_sep and low in COUNTRY_CODES:
         return tok.upper()
+    if re.fullmatch(r"\d+(?:st|nd|rd|th)", low):      # 1st, 2nd, 3rd, 4th
+        return low
     if any(c.isdigit() for c in tok):                 # 24, 4K, 1080p, S01, 3D ...
         return tok.upper() if re.fullmatch(r"\d+[kKdD]", tok) else tok
     if tok != tok.upper() and tok != tok.lower():     # already mixed (BritBox, iPlayer, McDonald): leave it

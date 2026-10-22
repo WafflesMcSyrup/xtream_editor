@@ -6,7 +6,7 @@ from PySide6.QtGui import QBrush, QColor, QFont
 
 from core.models import KIND_LABEL
 
-COLS = ["#", "Name", "Category", "EPG ID", "Logo URL", "Type", "Status"]
+COLS = ["#", "Name", "Category", "EPG ID", "Logo URL", "Type", "Status", "Source"]
 FIELD = {1: "name", 2: "category", 3: "epg_id", 4: "logo"}
 
 _EDITED_BG = QBrush(QColor(255, 215, 0, 55))
@@ -35,6 +35,7 @@ class ItemModel(QAbstractTableModel):
         self.epg_has = None             # callable(epg_id) -> bool, or None if no guide scanned
         self.sort_col = 0
         self.sort_desc = False
+        self.sources = []               # a master list's providers (Library.sources), for the Source column
         self._del_font = QFont()
         self._del_font.setItalic(True)
         self._del_font.setStrikeOut(True)
@@ -69,6 +70,8 @@ class ItemModel(QAbstractTableModel):
                 return it.logo
             if c == 5:
                 return KIND_LABEL[it.kind]
+            if c == 7:
+                return self.sources[it.src]["label"] if 0 <= it.src < len(self.sources) else ""
             return status_text(it)
         if role == Qt.ForegroundRole:
             if it.deleted:
@@ -131,6 +134,8 @@ class ItemModel(QAbstractTableModel):
             return lambda it: it.logo.lower()
         if c == 5:
             return lambda it: (it.kind, it.num)
+        if c == 7:
+            return lambda it: (it.src, it.num)
         return status_text
 
     def _sorted(self, rows):

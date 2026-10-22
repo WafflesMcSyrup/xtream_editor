@@ -10,8 +10,46 @@ _DOLLAR = re.compile(r"\$\{(\d+)\}|\$(\d+)")
 _REFS = re.compile(r"\\g<(\d+)>|\\(\d+)")
 
 
+# Superscript and subscript letters/numbers (ᴴᴰ, ⁶⁰ᶠᵖˢ, ᴿᴬᵂ, ², ...) and the space in front of them
+_SUPER = (r"\s*[\u00B2\u00B3\u00B9\u02B0-\u02B8\u02E0-\u02E4\u1D2C-\u1D6A\u1D78\u1D9B-\u1DBF\u2070-\u209F]+")
+# Two-letter country/language codes in front of a pipe: "US| CNN", "US | CNN", "|US| CNN", "[UK] BBC"
+_CODES = ("US|UK|USA|CA|AU|NZ|IE|DE|FR|ES|IT|PT|NL|BE|CH|AT|SE|NO|DK|FI|PL|RU|TR|GR|MX|BR|AR|IN|PK|ZA|AE|SA|QA|"
+          "KW|IL|JP|KR|CN|HK|TW|SG|MY|TH|PH|ID|VN|EN")
+_COUNTRY = (r"^\s*(?:[|\u2503\u2502]\s*)?(?:(?:" + _CODES + r")\s*[|\u2503\u2502]|\[(?:" + _CODES + r")\])\s*")
+
+# Ready-made rules that ship with the app. They can be switched on and off but not edited or deleted
+# (Copy makes an editable version). Only their on/off state is saved in your settings.
+BUILTIN = (
+    {"id": "super_names", "name": "Remove superscript text (names)", "kinds": "all", "field": "name",
+     "pattern": _SUPER, "ignore_case": True, "rewrite_on": True, "rewrite": "", "move": "", "delete": False,
+     "note": "Takes the little raised letters and numbers (like ᴴᴰ or ⁶⁰ᶠᵖˢ) out of item names."},
+    {"id": "super_cats", "name": "Remove superscript text (categories)", "kinds": "all", "field": "category",
+     "pattern": _SUPER, "ignore_case": True, "rewrite_on": True, "rewrite": "", "move": "", "delete": False,
+     "note": "The same for category names. Two categories that end up with the same name are merged."},
+    {"id": "country_names", "name": "Remove country prefixes (names)", "kinds": "all", "field": "name",
+     "pattern": _COUNTRY, "ignore_case": True, "rewrite_on": True, "rewrite": "", "move": "", "delete": False,
+     "note": "Takes a prefix like \"US| \", \"UK | \", \"|US| \" or \"[CA] \" off the start of item names."},
+    {"id": "country_cats", "name": "Remove country prefixes (categories)", "kinds": "all", "field": "category",
+     "pattern": _COUNTRY, "ignore_case": True, "rewrite_on": True, "rewrite": "", "move": "", "delete": False,
+     "note": "The same for category names. Careful: \"US | Sports\" and \"UK | Sports\" would both become "
+             "\"Sports\" and merge."},
+)
+
+
+def builtin_rules(states=None):
+    """The built-in rules as normal rule dicts (plus 'builtin', 'id' and 'note'); 'on' comes from the saved
+    states {id: bool}. They start switched off."""
+    states = states if isinstance(states, dict) else {}
+    out = []
+    for b in BUILTIN:
+        r = normalize(b)
+        r.update(builtin=True, id=b["id"], note=b["note"], on=bool(states.get(b["id"], False)))
+        out.append(r)
+    return out
+
+
 def new_rule():
-    return {"name": "", "on": True, "kinds": "all", "field": "name", "pattern": "", "ignore_case": True,
+    return {"name": "", "on": True, "kinds": "all", "field": "name", "only_cat": "", "pattern": "", "ignore_case": True,
             "rewrite_on": False, "rewrite": "", "move": "", "delete": False}
 
 
@@ -28,7 +66,7 @@ def normalize(r):
         out["kinds"] = "all"
     if out["field"] not in {k for _, k in FIELD_CHOICES}:
         out["field"] = "name"
-    for k in ("name", "pattern", "rewrite", "move"):
+    for k in ("name", "only_cat", "pattern", "rewrite", "move"):
         out[k] = str(out[k] or "")
     return out
 
@@ -75,6 +113,7 @@ def plan(items, rules):
         field, kinds = rule["field"], rule["kinds"]
         repl = template(rule["rewrite"]) if rule["rewrite_on"] else None
         move = rule["move"].strip()
+        only = rule["only_cat"].strip().casefold()          # blank = every category
         try:
             for it in items:
                 if it.deleted or it.gone or (kinds != "all" and it.kind != kinds):
@@ -83,6 +122,8 @@ def plan(items, rules):
                 if st is None:
                     st = state[it.key] = {"item": it, "name": it.name, "category": it.category, "deleted": False}
                 if st["deleted"]:
+                    continue
+                if only and st["category"].casefold() != only:     # only items in that category (as of this rule)
                     continue
                 cur = st[field]
                 if not rx.search(cur):

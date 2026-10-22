@@ -13,6 +13,7 @@ if errorlevel 1 goto :fail
 py -m PyInstaller --noconfirm --clean --console --name XtreamServer server_main.py
 if errorlevel 1 goto :fail
 copy /y start_server_exe.bat dist\XtreamServer\start_server.bat >nul
+copy /y start_server_exe_2.bat dist\XtreamServer\start_server_2.bat >nul
 copy /y LICENSE dist\XtreamServer\ >nul
 copy /y DISCLAIMER.txt dist\XtreamServer\ >nul
 copy /y LICENSE dist\XtreamEditor\ >nul

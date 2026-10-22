@@ -69,6 +69,9 @@ below under the *"The Xtream Server"* help topic for how.
   your list until you press Apply. A tick box keeps your **standard acronym list** uppercase (it starts with ESPN, ABC, CBS, NBC, FOX, BBC, AMC, MGM, NFL, NBA, MLB, NHL, HBO, PBS and more). **Edit standard list...** changes it once and it's remembered, and the box below adds one-off extras.
   Search, the type filter and a *Hide fully deleted categories* box help with long lists, and clicking a column
   header sorts. Renamed categories stay renamed when the provider re-syncs.
+- **Name manager** (**Edit > Name manager**, Ctrl+Shift+N): bulk tidy-ups for item names, like the Category manager but for the names of channels, movies and series. Pick the type (Live, Movies, Series or all) and which items (everything, the rows selected in the main list, or the category selected in the sidebar), then what to do: **Proper Case** (numbers are left alone, small words like "of" and "the" stay lowercase, and your standard acronym list from the Category manager stays uppercase), **UPPERCASE**, **lowercase**, **Trim extra spaces**, **Remove a prefix** (type something like `US |` and it comes off the start of each name), or **Find and replace**. **Preview** lists every name that would change, with the before and after, and **Apply** only unlocks once you've previewed. It's one undo step, with the same confirmation popup and **Undo last action** button as the other tools. Renamed items count as edited, so a re-sync keeps your names.
+- **Copy edits from another project** (**Edit > Copy edits from another project...**): for when you've spent days editing one provider's list and get a new list from a different provider with mostly the same Live channels. Open the new list as your project, pick the `.xtp` you've been editing, and press **Preview**. Channels are matched by **EPG ID** first, then by **name** (ignoring prefixes like `US|` and tags like HD or 4K). Channels you deleted in the other list are never listed as missing; they get their own tab, and the **Delete the channels you deleted in the other list** box decides whether their matches are deleted here too (ones already gone here aren't shown). Tick **Only the channels I starred in the other list** to do your favorites first; it covers just those channels, and the whole-list steps (order, marking new, deleting) wait until you untick it and go again. Tick what to copy: deleted channels, favorites, names, categories, logos, EPG IDs you set by hand, and the order of the channels. Channels the new list has that your old one didn't are marked **new**, so you can find them. The tabs show every change, the channels only in one list, and any unclear matches (the same name several times, which are skipped). Nothing is touched until **Apply**, which is one undo step, and the other project file is never changed. Live channels only for now. If you renamed a channel a lot in the old list and it has no EPG ID, it may not match; it'll show up under *Only in the other list*.
+- **Build a master list** (**Edit > Build a master list...**): pick channels from two provider projects and collect them in a third, master project. Choose the master file (a new one, or an existing master to add more to), then pick your two lists as **List A** and **List B**. Each side has search, a category filter and a favorites-only filter; select channels and press **Add selected**, or **Add all shown**. Channels keep the names, categories, logos and stars you already set, and the master is saved every time you add. If a channel looks like one the master already has from the other provider (same guide ID or same name), you can add both, skip it, or replace the master's version. The third window on the right shows the master as you build it (with which list each channel came from); **Remove selected** (or the Delete key) takes channels back out, and the arrow buttons move them up, down, to the top or to the bottom (clear the search first). In the main editor a master list gets a **Source** column (which list each channel came from) and a **Source** filter next to the search box. Each list also has a short tag, set in the master builder (**Tag: [ ]** under each list's login, A and B by default). To put the tag in front of the names, open the **Name manager**, pick **Add source tag**, check or change the tags, and Preview/Apply: `ESPN` becomes `[A] ESPN`. The tag can be anything you like between the brackets. **Remove source tag** takes them back off. Each channel in the master plays from the provider it came from, and the guide is built from both providers' guides. Open the master like any project to reorder, rename or export it, and run it in the local server (or headless with `--serve master.xtp`). Live channels only for now, and a master isn't fetched from a provider: to change what's in it, come back to this window. Each provider's connection limit still applies to its own channels. Don't have the master open in the editor while you add to it. If the project you want to use is open, **File > Close project** (Ctrl+W) empties the editor first.
 - **Duplicate finder** (**Edit > Find duplicates**, Ctrl+Shift+U): looks for the same movie, series or channel listed
   more than once. Pick the type (Movies, Series, Live, or a mix) and the scope (active items, favorites, new since
   the last sync, or everything including deleted), then press **Find duplicates**. Copies are grouped by title with
@@ -83,13 +86,15 @@ below under the *"The Xtream Server"* help topic for how.
   for Live try **Same title in the same category** first.
 - **Regex rules** (**Edit > Regex rules**, Ctrl+Shift+R): saved find-and-fix rules for tidying lots of items at once.
   Each rule says which type to look at (Live, Movies, Series or all), whether to test the item **name** or its
-  **category**, and a pattern (a Python regular expression). Then pick what happens to matches: **rewrite** the
+  **category**, an optional **Only in category** (so a rule only touches items in one category), and a pattern (a Python regular expression). Right-click a category in the left list and choose **Regex rules...** to open this window with that category already filled in. Then pick what happens to matches: **rewrite** the
   matched field (use `\1` or `$1` to keep what's inside the first set of parentheses), **move** them to a category
   (pick one from the dropdown or type a new name), and/or **delete** them. Rules run top to bottom, so a later rule sees what an earlier one did, and a name
   is never rewritten to nothing. Tick or untick a rule to switch it on or off; they're saved in your settings, so
   they're there next time (and for other projects). **Preview** lists every item that would change, with the before and
   after, and **Apply** only unlocks once you've previewed (any edit to a rule means preview again). Apply is one undo
-  step, with the same confirmation popup and **Undo last action** button as the duplicate finder. A few examples:
+  step, with the same confirmation popup and **Undo last action** button as the duplicate finder.
+  The first four rules in the list are **built in** (greyed): remove superscript text (like ᴴᴰ or ⁶⁰ᶠᵖˢ) from names or from categories, and remove country prefixes (like `US|`, `UK |`, `|US|` or `[CA]`) from names or from categories. They start switched off; tick the ones you want, then Preview. They can't be edited or deleted, but **Copy** gives you your own editable version. (Heads up: removing the country from categories merges "US | Sports" and "UK | Sports" into one "Sports".) The switched-on ones run first, then your own rules.
+  A few examples:
   - Strip a `US | ` prefix from names: look at the name, pattern `^US \| (.*)`, rewrite with `\1`.
   - Put everything in a `US |` category into one clean category: look at the category, pattern `^US \|`, move to `US Local`.
   - Remove "(HD)" or "[4K]" tags from names: look at the name, pattern `\s*[\(\[](HD|4K)[\)\]]`, tick rewrite and leave it empty.
@@ -285,6 +290,19 @@ reloads the list by itself, no restart needed. If the file is ever half-written 
 serving the previous list. (Your apps still need a refresh to see the changes.) The one thing it doesn't
 do is stop you from running two servers on the same port, so close the editor's server first.
 
+### Two logins, one list (two servers)
+
+If your provider only allows one connection per account and you have two accounts with the same channels
+(say one for watching and one for recording), you only have to edit the list once. In the editor use
+**File > Second login...**, enter the second account, and save the project (Ctrl+S). Then run two servers
+from that project: `start_server.bat` (first account) and `start_server_2.bat` (second account, same as
+`python main.py --serve --account 2`). The second one picks the next port up (8091), the user name plus a 2
+(`local2`) and its own password, all printed in its window; add `--port`, `--user` or `--password` to choose
+your own. Point one player at each. Both watch the project file, so a save in the editor updates both, and only
+the first server does the daily re-sync. The two servers keep separate guide and log files (named after their
+port), so they don't step on each other. This assumes both accounts see the same stream IDs, which is normal
+for one provider.
+
 ### As Windows programs (no Python needed)
 
 Run **build_exe.bat** on Windows (it installs PyInstaller for you). It makes two folders in `dist`:
@@ -357,9 +375,11 @@ QT_QPA_PLATFORM=offscreen python tests/test_ui.py     # on Windows: set QT_QPA_P
 ```
 main.py            start here (--serve for the no-window server)
 start_server.bat   double-click to run the server only
+start_server_2.bat double-click to run a second server with the second login
 server_main.py     the no-Qt server entry point (for the console exe)
 build_exe.bat      builds the Windows exes with PyInstaller
 start_server_exe.bat  launcher that ships inside dist\XtreamServer
+start_server_exe_2.bat  the same for the second server
 core/              no-UI logic: models.py, xtream.py, xtream_server.py, exporter.py, epg.py, webserver.py, settings.py
 LICENSE            MIT license
 DISCLAIMER.txt     disclaimer / terms of use (also in Help, and shown on first run)
