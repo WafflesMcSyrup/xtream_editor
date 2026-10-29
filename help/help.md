@@ -23,9 +23,9 @@ below under the *"The Xtream Server"* help topic for how.
 ## The basic flow
 
 1. **File > Connect / fetch from server** (Ctrl+K). Paste your `get.php?username=...&password=...`
-   link and it fills in the server, username and password for you. Hit *Fetch channels*.
+   link and it fills in the server, username and password for you. The optional **Label** box at the top lets you name the list (like "Provider A - Home"); it shows in the window title and in the master list builder. Hit *Fetch channels*.
 2. Browse and edit (details below).
-3. **File > Save project** so your edits stick around. Next time you can just re-fetch and
+3. **File > Save project** so your edits stick around. **File > Recent projects** remembers the last five you opened or saved. Next time you can just re-fetch and
    your edits are kept (see *Re-syncing*).
 4. **File > Xtream server for IPTV apps** (Ctrl+Shift+X) to serve your edited list to your apps. Or
    **File > Export playlist** (Ctrl+E) if you'd rather use a file.
@@ -45,7 +45,8 @@ below under the *"The Xtream Server"* help topic for how.
   rows turn yellow) and press **Apply**. Giving two categories the same name merges them, and it's one undo step.
   The **Proper Case** button suggests tidy capitalization (small words like "of" and "the" stay lowercase, and
   acronyms like UK, USA, HD and TV stay uppercase), and there are **UPPERCASE** / **lowercase** / **Reset**
-  buttons too. They work on the selected rows, or on every row shown if none are selected, and nothing changes in
+  buttons too. **Remove Country Code** takes a prefix like `|EN|`, `EN |` or `[UK]` off the start of the name
+  (real country codes only), and you can combine it with Proper Case. They work on the selected rows, or on every row shown if none are selected, and nothing changes in
   your list until you press Apply. A tick box keeps your **standard acronym list** uppercase (it starts with ESPN, ABC, CBS, NBC, FOX, BBC, AMC, MGM, NFL, NBA, MLB, NHL, HBO, PBS and more). **Edit standard list...** changes it once and it's remembered, and the box below adds one-off extras.
   Search, the type filter and a *Hide fully deleted categories* box help with long lists, and clicking a column
   header sorts. Renamed categories stay renamed when the provider re-syncs.

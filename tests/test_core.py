@@ -418,6 +418,10 @@ def main():
         check(("name", "CNN") in [(f, v) for it, f, v in chg if it.id == "1"] and
               ("category", "US Local") in [(f, v) for it, f, v in chg if it.id == "1"], "to_changes gives Library.change() tuples")
         check(RR.normalize({"pattern": "x", "kinds": "bogus"})["kinds"] == "all", "damaged saved rules are repaired")
+        sc = RR.strip_country
+        check(sc("|EN| 4K MOVIES") == "4K MOVIES" and sc("EN| ACTION") == "ACTION" and sc("US | Sports") == "Sports"
+              and sc("[UK] BBC") == "BBC" and sc("Action | Thriller") == "Action | Thriller" and sc("IT: Chapter Two") == "IT: Chapter Two"
+              and sc("|EN|") == "|EN|", "strip_country removes real country codes only, never blanks a name")
         from core import carry as CY
         ca = [Item("live", "1", "US| ESPN HD", "Sports", epg_id="espn.us", num=0), Item("live", "2", "CNN", "News", num=1),
               Item("live", "3", "Old Show", "Misc", num=2), Item("live", "4", "CBS", "News", num=3),

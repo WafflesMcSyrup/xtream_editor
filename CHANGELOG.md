@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.4 (2026-10-29)
+
+- **Label** box at the top of the Fetch from Server (and Second login) dialog, so you can name each list (e.g. "Provider A - Home"). It's saved in the project, shows in the window title, and the master list builder uses it instead of the file name.
+- **File > Recent projects** keeps your last 5 projects (labels shown), with a Clear list entry.
+- Fixed: `build_exe.bat` now works when the folder is on a network share (it failed with "UNC paths are not supported").
+- Category manager: new **Remove Country Code** button (works on the selected rows, or every row shown) that strips `|EN|`, `EN |`, `[UK]` style prefixes from the New name column. Combine it with Proper Case.
+
 ## 6.3 (2026-10-22)
 
 New:
