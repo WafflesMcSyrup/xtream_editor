@@ -25,6 +25,8 @@ class ConnectDialog(QDialog):
         self.setWindowTitle(title)
         self.setMinimumWidth(580)
         form = QFormLayout(self)
+        self.label = QLineEdit(conn.get("label", ""))
+        self.label.setPlaceholderText("A name so you can tell your lists apart, e.g. Provider A - Home (optional)")
         self.link = QLineEdit()
         self.link.setPlaceholderText("Paste your get.php / player_api.php link here (optional)")
         self.server = QLineEdit(conn.get("server", ""))
@@ -36,6 +38,7 @@ class ConnectDialog(QDialog):
         show.toggled.connect(lambda on: self.pw.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
         self.ua = QLineEdit(conn.get("ua") or DEFAULT_UA)
         self.link.textChanged.connect(self._parse)
+        form.addRow("Label:", self.label)
         form.addRow("Link:", self.link)
         form.addRow(QLabel("<i>...or fill these in yourself:</i>"))
         form.addRow("Server URL:", self.server)
@@ -71,8 +74,11 @@ class ConnectDialog(QDialog):
         self.accept()
 
     def values(self):
-        return {"server": self.server.text().strip(), "username": self.user.text().strip(),
-                "password": self.pw.text(), "ua": self.ua.text().strip() or DEFAULT_UA}
+        out = {"server": self.server.text().strip(), "username": self.user.text().strip(),
+               "password": self.pw.text(), "ua": self.ua.text().strip() or DEFAULT_UA}
+        if self.label.text().strip():
+            out["label"] = self.label.text().strip()
+        return out
 
 
 class FindReplaceDialog(QDialog):
@@ -1168,7 +1174,8 @@ class CategoryManagerDialog(QDialog):
         tools = QHBoxLayout()
         tools.addWidget(QLabel("Tidy up the New name column:"))
         for text, fn in (("Proper Case", self.do_proper), ("UPPERCASE", lambda: self.do_case(str.upper)),
-                         ("lowercase", lambda: self.do_case(str.lower)), ("Reset", self.do_reset)):
+                         ("lowercase", lambda: self.do_case(str.lower)),
+                         ("Remove Country Code", self.do_country), ("Reset", self.do_reset)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             tools.addWidget(b)
@@ -1309,6 +1316,12 @@ class CategoryManagerDialog(QDialog):
         extra = self.words()
         for i in self.targets():
             self.rows[i]["new"] = proper_case(self.rows[i]["new"], extra)
+        self.fill()
+
+    def do_country(self):
+        from core.rules import strip_country
+        for i in self.targets():
+            self.rows[i]["new"] = strip_country(self.rows[i]["new"])
         self.fill()
 
     def do_reset(self):
@@ -2807,7 +2820,7 @@ class _SourcePane(QGroupBox):
     @property
     def label(self):
         from core import master
-        return master.source_label(self.path)
+        return (self.lib.connection.get("label") if self.lib else "") or master.source_label(self.path)
 
     def browse(self):
         p, _ = QFileDialog.getOpenFileName(self, "Project to take channels from", self.dlg.start_dir,

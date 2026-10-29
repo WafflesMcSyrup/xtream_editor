@@ -554,6 +554,11 @@ try:
     cm.do_proper()
     from core.casing import proper_case
     check(cm.rows[first_i]["new"] == proper_case(cm.rows[first_i]["cat"].upper(), cm.words()), "Proper Case button works on the selection")
+    cm.rows[first_i]["new"] = "|EN| ACTION/THRILLER"
+    cm.do_country()
+    check(cm.rows[first_i]["new"] == "ACTION/THRILLER", "Remove Country Code button strips the prefix from the selection")
+    cm.do_proper()
+    check(cm.rows[first_i]["new"] == "Action/Thriller", "...and combines with Proper Case")
     # standard acronym list: on by default, can be switched off, extras add to it, choices are remembered
     check(cm.std_on.isChecked() and {"espn", "nfl", "amc", "pbs"} <= cm.words(), "standard acronym list is on by default")
     cm.std_on.setChecked(False)
@@ -1052,6 +1057,30 @@ try:
     check(win.table.isColumnHidden(7) and not win.src_box.isVisible() or win.table.isColumnHidden(7), "an ordinary project hides the Source column again")
     nd2.reload()
     check(nd2.op.findData("addtag") < 0, "and the Name manager drops the tag actions")
+    # --- label and recent projects
+    from ui.dialogs import ConnectDialog as _CD
+    cdlg = _CD(win, {"server": "http://x", "username": "u", "password": "p", "label": "Provider A - Home"})
+    check(cdlg.label.text() == "Provider A - Home", "the connect dialog has a label box, filled from the saved connection")
+    win.lib.connection = dict(win.lib.connection, label="Provider A - Home")
+    win._update_title()
+    check("Provider A - Home" in win.windowTitle(), "the label shows in the window title")
+    win.cfg["recent_projects"] = []
+    paths = []
+    for n in range(7):
+        pth = os.path.join(TMP, f"recent{n}.xtp")
+        open(pth, "w").close()
+        paths.append(pth)
+        win._remember_recent(pth)
+    win._remember_recent(paths[3])
+    rec = [r["path"] for r in win.cfg["recent_projects"]]
+    check(len(rec) == 5 and rec[0] == paths[3] and rec.count(paths[3]) == 1 and paths[0] not in rec, "recent projects keep the last 5, newest first, no repeats")
+    win._fill_recent()
+    texts = [a.text() for a in win.recent_menu.actions() if a.text()]
+    check(any("Provider A - Home - recent3.xtp" in t for t in texts) and "Clear list" in texts, "the Recent projects menu lists them with their labels")
+    win._clear_recent()
+    win._fill_recent()
+    check([a.text() for a in win.recent_menu.actions()] == ["(none yet)"], "Clear list empties it")
+    win.lib.connection.pop("label", None)
     # --- close project
     win.lib.dirty = False
     win.close_project()

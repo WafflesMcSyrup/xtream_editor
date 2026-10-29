@@ -17,6 +17,13 @@ _CODES = ("US|UK|USA|CA|AU|NZ|IE|DE|FR|ES|IT|PT|NL|BE|CH|AT|SE|NO|DK|FI|PL|RU|TR
           "KW|IL|JP|KR|CN|HK|TW|SG|MY|TH|PH|ID|VN|EN")
 _COUNTRY = (r"^\s*(?:[|\u2503\u2502]\s*)?(?:(?:" + _CODES + r")\s*[|\u2503\u2502]|\[(?:" + _CODES + r")\])\s*")
 
+def strip_country(name):
+    """'|EN| 4K MOVIES' -> '4K MOVIES'. Only a real country/language code at the start, in pipe or [bracket] form.
+    Never returns an empty name (the old one is kept instead)."""
+    out = re.sub(_COUNTRY, "", name, count=1, flags=re.IGNORECASE).strip()
+    return out or name
+
+
 # Ready-made rules that ship with the app. They can be switched on and off but not edited or deleted
 # (Copy makes an editable version). Only their on/off state is saved in your settings.
 BUILTIN = (

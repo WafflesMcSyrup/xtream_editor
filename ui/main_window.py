@@ -261,6 +261,9 @@ class MainWindow(QMainWindow):
         for a in (self.a_connect, self.a_conn2, None, self.a_new, self.a_open, self.a_close, self.a_save, self.a_saveas, None,
                   self.a_export, self.a_list, self.a_xs, self.a_serve, None, self.a_quit):
             m.addSeparator() if a is None else m.addAction(a)
+            if a is self.a_open:
+                self.recent_menu = m.addMenu("Recent projects")
+                self.recent_menu.aboutToShow.connect(self._fill_recent)
         m = mb.addMenu("&Edit")
         for a in (self.a_undo, self.a_redo, None, self.a_cat, self.a_catmgr, self.a_names, self.a_dupes, self.a_carry, self.a_master, self.a_rules, self.a_epgid, self.a_logo, self.a_find,
                   None, self.a_fav, self.a_impfav, self.a_seen, None, self.a_del, self.a_restore):
@@ -417,6 +420,9 @@ class MainWindow(QMainWindow):
 
     def _update_title(self):
         name = os.path.basename(self.lib.path) if self.lib.path else "untitled"
+        label = self.lib.connection.get("label")
+        if label:
+            name = f"{label} - {name}"
         self.setWindowTitle(f"Xtream Editor - {name}{' *' if self.lib.dirty else ''}")
 
     def _update_actions(self):
@@ -1153,6 +1159,47 @@ class MainWindow(QMainWindow):
         self.refresh()
         self._after_change("Project closed. Use File > Open or File > Connect to start again.")
 
+    RECENT_MAX = 5
+
+    def _remember_recent(self, path):
+        """Keep the last few projects you opened or saved, newest first."""
+        if not path:
+            return
+        path = os.path.abspath(path)
+        old = [r for r in self.cfg.get("recent_projects", []) if isinstance(r, dict) and r.get("path")]
+        keep = [r for r in old if os.path.normcase(r["path"]) != os.path.normcase(path)]
+        keep.insert(0, {"path": path, "label": self.lib.connection.get("label", "")})
+        self.cfg["recent_projects"] = keep[:self.RECENT_MAX]
+        cfg.save(self.cfg)
+
+    def _fill_recent(self):
+        m = self.recent_menu
+        m.clear()
+        recent = [r for r in self.cfg.get("recent_projects", []) if isinstance(r, dict) and r.get("path")]
+        for n, r in enumerate(recent[:self.RECENT_MAX], 1):
+            base = os.path.basename(r["path"])
+            act = m.addAction(f"&{n}  {r['label'] + ' - ' if r.get('label') else ''}{base}")
+            act.setToolTip(r["path"])
+            act.setStatusTip(r["path"])
+            act.triggered.connect(lambda _=False, p=r["path"]: self.open_recent(p))
+        if not recent:
+            m.addAction("(none yet)").setEnabled(False)
+        else:
+            m.addSeparator()
+            m.addAction("Clear list").triggered.connect(self._clear_recent)
+
+    def _clear_recent(self):
+        self.cfg["recent_projects"] = []
+        cfg.save(self.cfg)
+
+    def open_recent(self, path):
+        if not self._maybe_save():
+            return
+        if not os.path.exists(path):
+            self.info("Project not found", f"I can't find {path}\n\nIf it's on a network drive, check that it's online.")
+            return
+        self._load_project(path)
+
     def open_project(self):
         if not self._maybe_save():
             return
@@ -1175,6 +1222,7 @@ class MainWindow(QMainWindow):
             self.category = set()
             self.cfg["last_project"] = path
             cfg.save(self.cfg)
+            self._remember_recent(path)
             self.refresh()
             self._after_change(f"Opened {os.path.basename(path)} ({len(lib.items):,} items).")
 
@@ -1205,6 +1253,7 @@ class MainWindow(QMainWindow):
         QApplication.restoreOverrideCursor()
         self.cfg["last_project"] = path
         cfg.save(self.cfg)
+        self._remember_recent(path)
         self._after_change(f"Saved {os.path.basename(path)}.")
         return True
 
